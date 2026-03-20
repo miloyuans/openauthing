@@ -20,5 +20,10 @@
   },
   "session": {
     "secret": "change-me-in-local-dev-only"
+  },
+  "oidc": {
+    "issuer": "http://localhost:8080",
+    "signing_key_file": "",
+    "authorization_code_ttl_seconds": 300
   }
 }

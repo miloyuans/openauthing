@@ -25,6 +25,23 @@ type responseEnvelope struct {
 	} `json:"error"`
 }
 
+type discoveryDocument struct {
+	Issuer    string   `json:"issuer"`
+	JWKSURI   string   `json:"jwks_uri"`
+	Responses []string `json:"response_types_supported"`
+	Scopes    []string `json:"scopes_supported"`
+}
+
+type jwksDocument struct {
+	Keys []struct {
+		KTY string `json:"kty"`
+		Alg string `json:"alg"`
+		KID string `json:"kid"`
+		N   string `json:"n"`
+		E   string `json:"e"`
+	} `json:"keys"`
+}
+
 func newTestServer(t *testing.T, cfg config.Config) *Server {
 	t.Helper()
 
@@ -190,5 +207,81 @@ func TestPingReturnsUnifiedSuccessResponse(t *testing.T) {
 
 	if payload.RequestID == "" {
 		t.Fatal("expected request_id in ping response")
+	}
+}
+
+func TestOIDCDiscoveryEndpoint(t *testing.T) {
+	srv := newTestServer(t, config.Config{
+		App: config.AppConfig{Name: "openauthing", Env: "test"},
+		HTTP: config.HTTPConfig{
+			Addr:           ":0",
+			AllowedOrigins: []string{"http://localhost:5173"},
+		},
+		Postgres: config.PostgresConfig{DSN: "postgres://openauthing@localhost:5432/openauthing?sslmode=disable"},
+		Redis:    config.RedisConfig{Addr: "redis:6379"},
+		Log:      config.LogConfig{Level: "debug"},
+		Session:  config.SessionConfig{Secret: "test-session-secret"},
+		OIDC:     config.OIDCConfig{Issuer: "https://iam.example.test"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	var payload discoveryDocument
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("expected valid discovery response: %v", err)
+	}
+
+	if payload.Issuer != "https://iam.example.test" {
+		t.Fatalf("expected issuer to match config, got %q", payload.Issuer)
+	}
+
+	if payload.JWKSURI != "https://iam.example.test/.well-known/jwks.json" {
+		t.Fatalf("expected jwks_uri, got %q", payload.JWKSURI)
+	}
+
+	if len(payload.Responses) == 0 || payload.Responses[0] != "code" {
+		t.Fatalf("expected response types to contain code, got %#v", payload.Responses)
+	}
+}
+
+func TestOIDCJWKSEndpoint(t *testing.T) {
+	srv := newTestServer(t, config.Config{
+		App: config.AppConfig{Name: "openauthing", Env: "test"},
+		HTTP: config.HTTPConfig{
+			Addr:           ":0",
+			AllowedOrigins: []string{"http://localhost:5173"},
+		},
+		Postgres: config.PostgresConfig{DSN: "postgres://openauthing@localhost:5432/openauthing?sslmode=disable"},
+		Redis:    config.RedisConfig{Addr: "redis:6379"},
+		Log:      config.LogConfig{Level: "debug"},
+		Session:  config.SessionConfig{Secret: "test-session-secret"},
+		OIDC:     config.OIDCConfig{Issuer: "https://iam.example.test"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	var payload jwksDocument
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("expected valid jwks response: %v", err)
+	}
+
+	if len(payload.Keys) != 1 {
+		t.Fatalf("expected one jwk, got %d", len(payload.Keys))
+	}
+
+	if payload.Keys[0].KTY != "RSA" || payload.Keys[0].Alg != "RS256" || payload.Keys[0].KID == "" || payload.Keys[0].N == "" || payload.Keys[0].E == "" {
+		t.Fatalf("unexpected jwk payload: %#v", payload.Keys[0])
 	}
 }

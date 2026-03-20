@@ -75,6 +75,15 @@ BEGIN
     IF to_regclass('public.auth_sessions') IS NULL THEN
         RAISE EXCEPTION 'missing table: auth_sessions';
     END IF;
+    IF to_regclass('public.oidc_clients') IS NULL THEN
+        RAISE EXCEPTION 'missing table: oidc_clients';
+    END IF;
+    IF to_regclass('public.oidc_authorization_codes') IS NULL THEN
+        RAISE EXCEPTION 'missing table: oidc_authorization_codes';
+    END IF;
+    IF to_regclass('public.oidc_refresh_tokens') IS NULL THEN
+        RAISE EXCEPTION 'missing table: oidc_refresh_tokens';
+    END IF;
 END $$;
 
 DO $$
@@ -86,6 +95,7 @@ DECLARE
     group_one UUID;
     role_one UUID;
     permission_one UUID;
+    oidc_client_one UUID;
 BEGIN
     INSERT INTO tenants (name, slug, status)
     VALUES ('Tenant One', 'tenant-one', 'active')
@@ -196,6 +206,74 @@ BEGIN
         'https://admin.example.test', 'https://admin.example.test/icon.png', 'Admin frontend'
     );
 
+    INSERT INTO oidc_clients (
+        tenant_id, app_id, client_id, client_secret_hash, redirect_uris, post_logout_redirect_uris,
+        grant_types, response_types, scopes, token_endpoint_auth_method, require_pkce,
+        access_token_ttl, refresh_token_ttl, id_token_signed_response_alg
+    )
+    SELECT
+        tenant_one,
+        id,
+        'verify-public-client',
+        NULL,
+        ARRAY['https://client.example.test/callback'],
+        ARRAY['https://client.example.test/logout-callback'],
+        ARRAY['authorization_code', 'refresh_token'],
+        ARRAY['code'],
+        ARRAY['openid', 'profile', 'email'],
+        'none',
+        TRUE,
+        600,
+        3600,
+        'RS256'
+    FROM applications
+    WHERE tenant_id = tenant_one AND code = 'admin-console'
+    RETURNING id INTO oidc_client_one;
+
+    BEGIN
+        INSERT INTO oidc_clients (
+            tenant_id, app_id, client_id, client_secret_hash, redirect_uris, post_logout_redirect_uris,
+            grant_types, response_types, scopes, token_endpoint_auth_method, require_pkce,
+            access_token_ttl, refresh_token_ttl, id_token_signed_response_alg
+        )
+        SELECT
+            tenant_one,
+            id,
+            'verify-public-client',
+            NULL,
+            ARRAY['https://client2.example.test/callback'],
+            ARRAY[]::TEXT[],
+            ARRAY['authorization_code'],
+            ARRAY['code'],
+            ARRAY['openid'],
+            'none',
+            TRUE,
+            600,
+            3600,
+            'RS256'
+        FROM applications
+        WHERE tenant_id = tenant_one AND code = 'admin-console';
+        RAISE EXCEPTION 'expected unique violation on oidc_clients.client_id';
+    EXCEPTION
+        WHEN unique_violation THEN NULL;
+    END;
+
+    INSERT INTO oidc_authorization_codes (
+        oidc_client_id, tenant_id, user_id, session_id, code_hash, redirect_uri, scopes,
+        nonce, code_challenge, code_challenge_method, expires_at
+    ) VALUES (
+        oidc_client_one, tenant_one, user_one, session_one, repeat('b', 64),
+        'https://client.example.test/callback', ARRAY['openid', 'profile'],
+        'nonce-verify', 'challenge-verify', 'S256', NOW() + INTERVAL '5 minutes'
+    );
+
+    INSERT INTO oidc_refresh_tokens (
+        oidc_client_id, tenant_id, user_id, session_id, token_hash, scopes, expires_at
+    ) VALUES (
+        oidc_client_one, tenant_one, user_one, session_one, repeat('c', 64),
+        ARRAY['openid', 'profile'], NOW() + INTERVAL '1 day'
+    );
+
     BEGIN
         INSERT INTO applications (
             tenant_id, name, code, type, status, homepage_url, icon_url, description
@@ -220,6 +298,15 @@ DO $$
 BEGIN
     IF to_regclass('public.auth_sessions') IS NOT NULL THEN
         RAISE EXCEPTION 'auth_sessions table should have been dropped';
+    END IF;
+    IF to_regclass('public.oidc_refresh_tokens') IS NOT NULL THEN
+        RAISE EXCEPTION 'oidc_refresh_tokens table should have been dropped';
+    END IF;
+    IF to_regclass('public.oidc_authorization_codes') IS NOT NULL THEN
+        RAISE EXCEPTION 'oidc_authorization_codes table should have been dropped';
+    END IF;
+    IF to_regclass('public.oidc_clients') IS NOT NULL THEN
+        RAISE EXCEPTION 'oidc_clients table should have been dropped';
     END IF;
     IF to_regclass('public.applications') IS NOT NULL THEN
         RAISE EXCEPTION 'applications table should have been dropped';

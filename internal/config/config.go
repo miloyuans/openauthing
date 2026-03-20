@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -16,6 +17,8 @@ const (
 	defaultAllowedOrigins = "http://localhost:5173"
 	defaultLogLevel       = "info"
 	defaultSessionSecret  = "change-me-in-local-dev-only"
+	defaultOIDCIssuer     = "http://localhost:8080"
+	defaultOIDCCodeTTL    = 300
 )
 
 type Config struct {
@@ -25,6 +28,7 @@ type Config struct {
 	Redis    RedisConfig    `json:"redis"`
 	Log      LogConfig      `json:"log"`
 	Session  SessionConfig  `json:"session"`
+	OIDC     OIDCConfig     `json:"oidc"`
 }
 
 type AppConfig struct {
@@ -53,6 +57,12 @@ type SessionConfig struct {
 	Secret string `json:"secret"`
 }
 
+type OIDCConfig struct {
+	Issuer                      string `json:"issuer"`
+	SigningKeyFile              string `json:"signing_key_file"`
+	AuthorizationCodeTTLSeconds int    `json:"authorization_code_ttl_seconds"`
+}
+
 func Load() (Config, error) {
 	cfg := Config{
 		App: AppConfig{
@@ -75,6 +85,10 @@ func Load() (Config, error) {
 		Session: SessionConfig{
 			Secret: defaultSessionSecret,
 		},
+		OIDC: OIDCConfig{
+			Issuer:                      defaultOIDCIssuer,
+			AuthorizationCodeTTLSeconds: defaultOIDCCodeTTL,
+		},
 	}
 
 	if path := strings.TrimSpace(os.Getenv("OPENAUTHING_CONFIG_FILE")); path != "" {
@@ -90,6 +104,12 @@ func Load() (Config, error) {
 	cfg.Redis.Addr = getEnv("OPENAUTHING_REDIS_ADDR", cfg.Redis.Addr)
 	cfg.Log.Level = getEnv("OPENAUTHING_LOG_LEVEL", cfg.Log.Level)
 	cfg.Session.Secret = getEnv("OPENAUTHING_SESSION_SECRET", cfg.Session.Secret)
+	cfg.OIDC.Issuer = getEnv("OPENAUTHING_OIDC_ISSUER", cfg.OIDC.Issuer)
+	cfg.OIDC.SigningKeyFile = getEnv("OPENAUTHING_OIDC_SIGNING_KEY_FILE", cfg.OIDC.SigningKeyFile)
+	cfg.OIDC.AuthorizationCodeTTLSeconds = getEnvInt(
+		"OPENAUTHING_OIDC_AUTHORIZATION_CODE_TTL_SECONDS",
+		cfg.OIDC.AuthorizationCodeTTLSeconds,
+	)
 
 	if origins, ok := lookupEnv("OPENAUTHING_HTTP_ALLOWED_ORIGINS"); ok {
 		cfg.HTTP.AllowedOrigins = splitCSV(origins)
@@ -142,6 +162,36 @@ func (c Config) validate() error {
 		return fmt.Errorf("session.secret must not be empty")
 	}
 
+	if err := validateOIDCIssuer(c.OIDC.Issuer); err != nil {
+		return err
+	}
+
+	if c.OIDC.AuthorizationCodeTTLSeconds <= 0 {
+		return fmt.Errorf("oidc.authorization_code_ttl_seconds must be greater than 0")
+	}
+
+	return nil
+}
+
+func validateOIDCIssuer(raw string) error {
+	issuer := strings.TrimSpace(raw)
+	if issuer == "" {
+		return fmt.Errorf("oidc.issuer must not be empty")
+	}
+
+	parsed, err := url.Parse(issuer)
+	if err != nil {
+		return fmt.Errorf("oidc.issuer must be a valid URL: %w", err)
+	}
+
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("oidc.issuer must use http or https")
+	}
+
+	if strings.TrimSpace(parsed.Host) == "" {
+		return fmt.Errorf("oidc.issuer host must not be empty")
+	}
+
 	return nil
 }
 
@@ -161,6 +211,20 @@ func lookupEnv(key string) (string, bool) {
 	}
 
 	return value, true
+}
+
+func getEnvInt(key string, fallback int) int {
+	raw, ok := lookupEnv(key)
+	if !ok {
+		return fallback
+	}
+
+	var value int
+	if _, err := fmt.Sscanf(raw, "%d", &value); err != nil {
+		return fallback
+	}
+
+	return value
 }
 
 func splitCSV(raw string) []string {

@@ -20,6 +20,10 @@ import (
 	appsrepo "github.com/miloyuans/openauthing/internal/apps/repo"
 	appsservice "github.com/miloyuans/openauthing/internal/apps/service"
 	"github.com/miloyuans/openauthing/internal/config"
+	oidchandler "github.com/miloyuans/openauthing/internal/oidc/handler"
+	"github.com/miloyuans/openauthing/internal/oidc/keys"
+	oidcrepo "github.com/miloyuans/openauthing/internal/oidc/repo"
+	oidcservice "github.com/miloyuans/openauthing/internal/oidc/service"
 	platformhandler "github.com/miloyuans/openauthing/internal/platform/handler"
 	platformrepo "github.com/miloyuans/openauthing/internal/platform/repo"
 	platformservice "github.com/miloyuans/openauthing/internal/platform/service"
@@ -61,6 +65,11 @@ func New(cfg config.Config, logger *slog.Logger) (*Server, error) {
 	router.Use(servermiddleware.Recovery(logger))
 	router.Use(servermiddleware.Logging(logger))
 
+	oidcKeyManager, err := keys.NewManager(cfg.OIDC.SigningKeyFile, logger)
+	if err != nil {
+		return nil, fmt.Errorf("create oidc key manager: %w", err)
+	}
+
 	readinessRepo := platformrepo.NewConfigReadinessRepository(cfg)
 	serviceName := cfg.App.Name
 	if serviceName == "" {
@@ -80,8 +89,12 @@ func New(cfg config.Config, logger *slog.Logger) (*Server, error) {
 	groupRepo := usercenterrepo.NewPostgresGroupRepository(store)
 	roleRepo := usercenterrepo.NewPostgresRoleRepository(store)
 	appRepo := appsrepo.NewPostgresApplicationRepository(store)
+	oidcRepo := oidcrepo.NewPostgresRepository(store)
 	loginLimiter := authratelimit.NewMemoryLimiter(5, time.Minute)
 	authSvc := authservice.NewService(userRepo, sessionRepo, authpassword.NewArgon2ID(), loginLimiter, store, cfg.Session.Secret, logger)
+	oidcSvc := oidcservice.NewService(cfg.OIDC, oidcKeyManager, oidcRepo, oidcRepo, oidcRepo, userRepo, authSvc, store, cfg.Session.Secret, logger)
+	oidcHandler := oidchandler.NewHandler(oidcSvc, authhandler.DefaultCookieName)
+	oidcHandler.Register(router)
 	authHandler := authhandler.NewHandler(
 		authSvc,
 		authhandler.DefaultCookieName,

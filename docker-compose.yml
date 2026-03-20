@@ -10,6 +10,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations:/migrations:ro
+      - ./scripts:/scripts:ro
 
   redis:
     image: redis:7-alpine

@@ -1,0 +1,3 @@
+-- Task baseline migration for OIDC discovery and JWKS.
+-- No schema change is required in this phase because keys are loaded from file
+-- or generated in memory at process start.

@@ -1,0 +1,1 @@
+-- No schema change to roll back for the OIDC discovery and JWKS baseline task.
