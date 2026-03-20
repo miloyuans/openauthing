@@ -1,35 +1,42 @@
 # openauthing
 
-`openauthing` 是一个自建统一认证平台。当前仓库已经具备后续模块开发所需的基础运行框架：配置系统、结构化日志、统一错误返回、基础中间件、最小 HTTP 接口、Vue 管理后台骨架、Docker Compose 和 Makefile。
+`openauthing` 是一个自建统一认证平台。当前仓库已经具备：
 
-本任务仍然不引入任何业务逻辑，只打底运行能力。
+- 基础配置、日志、统一错误返回和中间件
+- 基础健康检查与 `ping` 接口
+- 第一版核心数据库表
+- `users / groups / roles / applications` 的 repo / service / handler 基础 CRUD
+
+本任务仍然不实现后台鉴权，只提供后续业务继续扩展所需的最小可用管理 API。
 
 ## 目录结构
 
 ```text
 cmd/server
+internal/apps
 internal/config
 internal/logging
 internal/platform
 internal/server
 internal/shared
+internal/store
+internal/usercenter
 migrations
+scripts
 web/admin
 deploy/docker
 docs
 ```
 
-## 配置系统
+## 配置
 
-配置支持两种来源，优先级为：
+配置优先级：
 
 1. 环境变量
-2. 本地 JSON 配置文件
+2. `OPENAUTHING_CONFIG_FILE` 指定的本地 JSON 配置文件
 3. 代码默认值
 
-如果设置了 `OPENAUTHING_CONFIG_FILE`，服务会先读取该文件，再用环境变量覆盖同名配置。
-
-### 当前支持的配置项
+当前支持：
 
 | 配置项 | 环境变量 | 示例值 |
 | --- | --- | --- |
@@ -45,18 +52,31 @@ docs
 
 参考：
 
-- [.env.example](./.env.example)
-- [config.example.json](./config.example.json)
+- [`.env.example`](./.env.example)
+- [`config.example.json`](./config.example.json)
 
-## HTTP 基线
+## HTTP 接口
 
-当前后端提供以下接口：
+基础接口：
 
 - `GET /healthz`
 - `GET /readyz`
 - `GET /api/v1/ping`
 
-统一成功响应：
+本任务新增 CRUD：
+
+- `GET /api/v1/users`
+- `POST /api/v1/users`
+- `GET /api/v1/users/:id`
+- `PUT /api/v1/users/:id`
+- `GET /api/v1/groups`
+- `POST /api/v1/groups`
+- `GET /api/v1/roles`
+- `POST /api/v1/roles`
+- `GET /api/v1/apps`
+- `POST /api/v1/apps`
+
+### 统一成功响应
 
 ```json
 {
@@ -67,35 +87,157 @@ docs
 }
 ```
 
-统一错误响应：
+### 统一错误响应
 
 ```json
 {
   "request_id": "a7d5678f3e6b45dbbc411d7da08ea6fd",
   "error": {
-    "code": "internal_error",
-    "message": "internal server error"
+    "code": "validation_error",
+    "message": "request validation failed",
+    "details": {
+      "fields": {
+        "username": "is required"
+      }
+    }
   }
 }
 ```
 
-## 中间件
+## API 使用示例
 
-当前已接入：
+### 创建用户
 
-- `request_id`
-- `recovery`
-- `access log`
-- `cors`
-- `auth` 占位中间件
+```bash
+curl -X POST http://localhost:8080/api/v1/users \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant_id": "11111111-1111-1111-1111-111111111111",
+    "username": "alice",
+    "email": "alice@example.com",
+    "display_name": "Alice",
+    "password_hash": "",
+    "password_algo": "argon2id",
+    "status": "active",
+    "source": "local"
+  }'
+```
 
-请求日志为结构化 JSON，包含：
+说明：`password_hash` 当前允许为空，为后续认证任务预留；接口响应不会回传 `password_hash`。
 
-- `request_id`
-- `method`
-- `path`
-- `status`
-- `latency_ms`
+### 查询用户列表
+
+```bash
+curl "http://localhost:8080/api/v1/users?tenant_id=11111111-1111-1111-1111-111111111111&username=ali&status=active&limit=20&offset=0"
+```
+
+### 查询单个用户
+
+```bash
+curl "http://localhost:8080/api/v1/users/22222222-2222-2222-2222-222222222222"
+```
+
+### 更新用户
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/users/22222222-2222-2222-2222-222222222222 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "display_name": "Alice Admin",
+    "status": "disabled"
+  }'
+```
+
+### 创建组
+
+```bash
+curl -X POST http://localhost:8080/api/v1/groups \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant_id": "11111111-1111-1111-1111-111111111111",
+    "name": "Platform",
+    "code": "platform",
+    "description": "Platform team"
+  }'
+```
+
+### 创建角色
+
+```bash
+curl -X POST http://localhost:8080/api/v1/roles \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant_id": "11111111-1111-1111-1111-111111111111",
+    "name": "Tenant Admin",
+    "code": "tenant_admin",
+    "description": "Tenant administrator"
+  }'
+```
+
+### 创建应用
+
+```bash
+curl -X POST http://localhost:8080/api/v1/apps \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant_id": "11111111-1111-1111-1111-111111111111",
+    "name": "Admin Console",
+    "code": "admin-console",
+    "type": "oidc-client",
+    "status": "active",
+    "homepage_url": "https://admin.example.test",
+    "icon_url": "https://admin.example.test/icon.png",
+    "description": "Admin frontend"
+  }'
+```
+
+### 列表过滤
+
+- users：`tenant_id`、`username`、`email`、`status`
+- groups：`tenant_id`、`name`、`code`
+- roles：`tenant_id`、`name`、`code`
+- apps：`tenant_id`、`name`、`code`、`type`、`status`
+
+列表接口统一支持：
+
+- `limit`
+- `offset`
+
+## 分层设计
+
+- `domain`：实体模型和输入模型
+- `repo`：仓储接口和 Postgres 实现
+- `service`：输入校验、默认值填充、错误映射
+- `handler`：HTTP 解码、查询参数处理、统一 JSON 响应
+- `store/postgres`：数据库连接、事务上下文和 `DBTX` 抽象
+
+Repo 层支持事务上下文。当前通过 `store.WithinTx(ctx, fn)` 将 `sql.Tx` 绑定到 `context.Context`，repo 在有事务上下文时优先走事务执行器。
+
+## Migration
+
+当前 migration 文件：
+
+- [`000001_init.up.sql`](./migrations/000001_init.up.sql)
+- [`000001_init.down.sql`](./migrations/000001_init.down.sql)
+- [`000002_runtime_baseline.up.sql`](./migrations/000002_runtime_baseline.up.sql)
+- [`000002_runtime_baseline.down.sql`](./migrations/000002_runtime_baseline.down.sql)
+- [`000003_core_identity.up.sql`](./migrations/000003_core_identity.up.sql)
+- [`000003_core_identity.down.sql`](./migrations/000003_core_identity.down.sql)
+- [`000004_crud_api_baseline.up.sql`](./migrations/000004_crud_api_baseline.up.sql)
+- [`000004_crud_api_baseline.down.sql`](./migrations/000004_crud_api_baseline.down.sql)
+
+执行：
+
+```bash
+make migrate-up
+make migrate-down
+```
+
+验证 migration：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify_migrations.ps1
+```
 
 ## 本地启动
 
@@ -126,13 +268,14 @@ make migrate-down
 
 当前测试覆盖：
 
-- 配置文件读取
-- 环境变量覆盖配置文件
-- `/healthz`
-- `/readyz`
-- `/api/v1/ping`
+- 配置文件读取与环境变量覆盖
+- `/healthz`、`/readyz`、`/api/v1/ping`
 - recovery 统一错误返回
-- access log 包含 `request_id`、`method`、`path`、`status`、`latency_ms`
+- access log 包含 `request_id`
+- user repo 事务上下文与过滤查询
+- user service 校验和错误映射
+- user handler 基础创建接口
+- migration 验证脚本检查核心表和唯一索引
 
 执行：
 
@@ -140,26 +283,15 @@ make migrate-down
 make test
 ```
 
-## Migration
+额外验证 migration：
 
-本任务没有数据库 schema 变更，但按任务约定提供了可回滚 migration 占位：
-
-- [000001_init.up.sql](./migrations/000001_init.up.sql)
-- [000001_init.down.sql](./migrations/000001_init.down.sql)
-- [000002_runtime_baseline.up.sql](./migrations/000002_runtime_baseline.up.sql)
-- [000002_runtime_baseline.down.sql](./migrations/000002_runtime_baseline.down.sql)
-
-## 验收
-
-1. 执行 `docker compose up --build`
-2. 访问 `http://localhost:8080/api/v1/ping`
-3. 观察后端日志，确认包含 `request_id`
-4. 访问 `http://localhost:8080/readyz`
-5. 执行 `make test`
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify_migrations.ps1
+```
 
 ## 当前限制
 
-- `auth middleware` 目前只是占位，不做真实认证
-- `/readyz` 目前只检查关键配置是否存在，不做真实连通性探测
-- `session secret` 目前只用于配置基线，后续任务再接入真实 session 能力
-- TODO：后续接入 zap 或继续沿用 `slog` 的统一日志封装策略时，再评估扩展字段和日志采样
+- 当前只实现基础 CRUD，没有后台鉴权
+- groups / roles / apps 暂时只实现列表和创建，未实现按 id 查询和更新
+- `/readyz` 仍然只检查关键配置是否存在，不做真实数据库连通性探测
+- TODO：后续任务再补事务型服务用例、更多 handler 测试、以及 users 与 groups/roles 的绑定 API

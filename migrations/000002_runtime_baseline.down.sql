@@ -1,2 +1,2 @@
--- No schema rollback is required for this task.
+-- Runtime baseline rollback placeholder retained for ordering.
 SELECT 1;

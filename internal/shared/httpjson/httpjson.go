@@ -2,6 +2,7 @@ package httpjson
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/miloyuans/openauthing/internal/shared/apierror"
@@ -52,4 +53,13 @@ func WriteAPIError(w http.ResponseWriter, r *http.Request, apiErr apierror.Error
 			Details: apiErr.Details,
 		},
 	})
+}
+
+func WriteErrorFrom(w http.ResponseWriter, r *http.Request, err error) error {
+	var apiErr apierror.Error
+	if errors.As(err, &apiErr) {
+		return WriteAPIError(w, r, apiErr)
+	}
+
+	return WriteAPIError(w, r, apierror.Internal())
 }

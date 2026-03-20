@@ -8,6 +8,10 @@ const (
 	CodeUnauthorized    = "unauthorized"
 	CodeForbidden       = "forbidden"
 	CodeInvalidConfig   = "invalid_config"
+	CodeBadRequest      = "bad_request"
+	CodeValidationError = "validation_error"
+	CodeNotFound        = "not_found"
+	CodeConflict        = "conflict"
 )
 
 type Error struct {
@@ -15,6 +19,10 @@ type Error struct {
 	Code    string
 	Message string
 	Details map[string]any
+}
+
+func (e Error) Error() string {
+	return e.Message
 }
 
 func New(status int, code, message string) Error {
@@ -51,6 +59,36 @@ func Forbidden(message string) Error {
 
 func InvalidConfig(message string, details map[string]any) Error {
 	err := New(http.StatusInternalServerError, CodeInvalidConfig, message)
+	err.Details = details
+	return err
+}
+
+func BadRequest(message string, details map[string]any) Error {
+	err := New(http.StatusBadRequest, CodeBadRequest, message)
+	err.Details = details
+	return err
+}
+
+func Validation(details map[string]any) Error {
+	err := New(http.StatusBadRequest, CodeValidationError, "request validation failed")
+	err.Details = details
+	return err
+}
+
+func NotFound(message string) Error {
+	if message == "" {
+		message = "resource not found"
+	}
+
+	return New(http.StatusNotFound, CodeNotFound, message)
+}
+
+func Conflict(message string, details map[string]any) Error {
+	if message == "" {
+		message = "resource conflict"
+	}
+
+	err := New(http.StatusConflict, CodeConflict, message)
 	err.Details = details
 	return err
 }

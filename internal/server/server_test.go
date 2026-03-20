@@ -33,7 +33,12 @@ func newTestServer(t *testing.T, cfg config.Config) *Server {
 		t.Fatalf("create logger: %v", err)
 	}
 
-	return New(cfg, logger)
+	srv, err := New(cfg, logger)
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	return srv
 }
 
 func TestHealthz(t *testing.T) {
@@ -43,7 +48,7 @@ func TestHealthz(t *testing.T) {
 			Addr:           ":0",
 			AllowedOrigins: []string{"http://localhost:5173"},
 		},
-		Postgres: config.PostgresConfig{DSN: "postgres://configured"},
+		Postgres: config.PostgresConfig{DSN: "postgres://openauthing@localhost:5432/openauthing?sslmode=disable"},
 		Redis:    config.RedisConfig{Addr: "redis:6379"},
 		Log:      config.LogConfig{Level: "debug"},
 		Session:  config.SessionConfig{Secret: "test-session-secret"},
@@ -91,7 +96,7 @@ func TestReadyz(t *testing.T) {
 			Addr:           ":0",
 			AllowedOrigins: []string{"http://localhost:5173"},
 		},
-		Postgres: config.PostgresConfig{DSN: "postgres://configured"},
+		Postgres: config.PostgresConfig{DSN: "postgres://openauthing@localhost:5432/openauthing?sslmode=disable"},
 		Redis:    config.RedisConfig{Addr: "redis:6379"},
 		Log:      config.LogConfig{Level: "debug"},
 		Session:  config.SessionConfig{Secret: "test-session-secret"},
@@ -126,6 +131,7 @@ func TestReadyzReturns503WhenDependenciesMissing(t *testing.T) {
 			Addr:           ":0",
 			AllowedOrigins: []string{"http://localhost:5173"},
 		},
+		Postgres: config.PostgresConfig{DSN: "postgres://openauthing@localhost:5432/openauthing?sslmode=disable"},
 		Log:     config.LogConfig{Level: "debug"},
 		Session: config.SessionConfig{Secret: "test-session-secret"},
 	})
@@ -159,7 +165,7 @@ func TestPingReturnsUnifiedSuccessResponse(t *testing.T) {
 			Addr:           ":0",
 			AllowedOrigins: []string{"http://localhost:5173"},
 		},
-		Postgres: config.PostgresConfig{DSN: "postgres://configured"},
+		Postgres: config.PostgresConfig{DSN: "postgres://openauthing@localhost:5432/openauthing?sslmode=disable"},
 		Redis:    config.RedisConfig{Addr: "redis:6379"},
 		Log:      config.LogConfig{Level: "debug"},
 		Session:  config.SessionConfig{Secret: "test-session-secret"},
