@@ -6,8 +6,16 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	authhandler "github.com/miloyuans/openauthing/internal/auth/handler"
+	authmiddleware "github.com/miloyuans/openauthing/internal/auth/middleware"
+	authpassword "github.com/miloyuans/openauthing/internal/auth/password"
+	authrepo "github.com/miloyuans/openauthing/internal/auth/repo"
+	authratelimit "github.com/miloyuans/openauthing/internal/auth/ratelimit"
+	authservice "github.com/miloyuans/openauthing/internal/auth/service"
 	appshandler "github.com/miloyuans/openauthing/internal/apps/handler"
 	appsrepo "github.com/miloyuans/openauthing/internal/apps/repo"
 	appsservice "github.com/miloyuans/openauthing/internal/apps/service"
@@ -68,15 +76,25 @@ func New(cfg config.Config, logger *slog.Logger) (*Server, error) {
 	statusHandler.RegisterAPI(apiRouter)
 
 	userRepo := usercenterrepo.NewPostgresUserRepository(store)
+	sessionRepo := authrepo.NewPostgresSessionRepository(store)
 	groupRepo := usercenterrepo.NewPostgresGroupRepository(store)
 	roleRepo := usercenterrepo.NewPostgresRoleRepository(store)
 	appRepo := appsrepo.NewPostgresApplicationRepository(store)
+	loginLimiter := authratelimit.NewMemoryLimiter(5, time.Minute)
+	authSvc := authservice.NewService(userRepo, sessionRepo, authpassword.NewArgon2ID(), loginLimiter, store, cfg.Session.Secret, logger)
+	authHandler := authhandler.NewHandler(
+		authSvc,
+		authhandler.DefaultCookieName,
+		strings.EqualFold(cfg.App.Env, "production"),
+		authmiddleware.RequireSession(authhandler.DefaultCookieName, authSvc),
+	)
 
 	userHandler := usercenterhandler.NewUserHandler(usercenterservice.NewUserService(userRepo))
 	groupHandler := usercenterhandler.NewGroupHandler(usercenterservice.NewGroupService(groupRepo))
 	roleHandler := usercenterhandler.NewRoleHandler(usercenterservice.NewRoleService(roleRepo))
 	appHandler := appshandler.NewApplicationHandler(appsservice.NewApplicationService(appRepo))
 
+	authHandler.Register(apiRouter)
 	userHandler.Register(apiRouter)
 	groupHandler.Register(apiRouter)
 	roleHandler.Register(apiRouter)

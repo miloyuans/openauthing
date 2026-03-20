@@ -8,8 +8,9 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("store:not_found")
-	ErrConflict = errors.New("store:conflict")
+	ErrNotFound  = errors.New("store:not_found")
+	ErrConflict  = errors.New("store:conflict")
+	ErrAmbiguous = errors.New("store:ambiguous")
 )
 
 func NormalizeError(err error) error {

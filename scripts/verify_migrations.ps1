@@ -72,6 +72,9 @@ BEGIN
     IF to_regclass('public.applications') IS NULL THEN
         RAISE EXCEPTION 'missing table: applications';
     END IF;
+    IF to_regclass('public.auth_sessions') IS NULL THEN
+        RAISE EXCEPTION 'missing table: auth_sessions';
+    END IF;
 END $$;
 
 DO $$
@@ -79,6 +82,7 @@ DECLARE
     tenant_one UUID;
     tenant_two UUID;
     user_one UUID;
+    session_one UUID;
     group_one UUID;
     role_one UUID;
     permission_one UUID;
@@ -102,6 +106,23 @@ BEGIN
     ) VALUES (
         tenant_two, 'alice', 'alice@tenant-one.test', '+10000000002', 'Alice Two', 'hashed-password', 'argon2id', 'active', 'local'
     );
+
+    INSERT INTO auth_sessions (
+        tenant_id, user_id, sid, login_method, mfa_verified, ip, user_agent, status, expires_at, last_seen_at
+    ) VALUES (
+        tenant_one, user_one, repeat('a', 64), 'username', FALSE, '127.0.0.1', 'verify-script', 'active', NOW() + INTERVAL '1 day', NOW()
+    ) RETURNING id INTO session_one;
+
+    BEGIN
+        INSERT INTO auth_sessions (
+            tenant_id, user_id, sid, login_method, mfa_verified, ip, user_agent, status, expires_at, last_seen_at
+        ) VALUES (
+            tenant_one, user_one, repeat('a', 64), 'username', FALSE, '127.0.0.2', 'verify-script', 'active', NOW() + INTERVAL '1 day', NOW()
+        );
+        RAISE EXCEPTION 'expected unique violation on auth_sessions.sid';
+    EXCEPTION
+        WHEN unique_violation THEN NULL;
+    END;
 
     BEGIN
         INSERT INTO users (
@@ -197,6 +218,9 @@ Invoke-Compose -Args @("exec", "-T", $PostgresService, "sh", "-lc", $applyDown)
 $verifyDown = @'
 DO $$
 BEGIN
+    IF to_regclass('public.auth_sessions') IS NOT NULL THEN
+        RAISE EXCEPTION 'auth_sessions table should have been dropped';
+    END IF;
     IF to_regclass('public.applications') IS NOT NULL THEN
         RAISE EXCEPTION 'applications table should have been dropped';
     END IF;

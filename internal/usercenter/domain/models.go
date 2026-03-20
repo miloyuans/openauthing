@@ -37,6 +37,7 @@ type CreateUserInput struct {
 	Email        string    `json:"email"`
 	Phone        string    `json:"phone"`
 	DisplayName  string    `json:"display_name"`
+	Password     string    `json:"password"`
 	PasswordHash string    `json:"password_hash"`
 	PasswordAlgo string    `json:"password_algo"`
 	Status       string    `json:"status"`
@@ -48,6 +49,7 @@ type UpdateUserInput struct {
 	Email        *string `json:"email"`
 	Phone        *string `json:"phone"`
 	DisplayName  *string `json:"display_name"`
+	Password     *string `json:"password"`
 	PasswordHash *string `json:"password_hash"`
 	PasswordAlgo *string `json:"password_algo"`
 	Status       *string `json:"status"`

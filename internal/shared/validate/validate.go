@@ -71,6 +71,22 @@ func URL(field, value string, errs map[string]string) {
 	}
 }
 
+func Password(field, value string, errs map[string]string) {
+	if strings.TrimSpace(value) == "" {
+		errs[field] = "is required"
+		return
+	}
+
+	if len(value) < 8 {
+		errs[field] = "must be at least 8 characters"
+		return
+	}
+
+	if len(value) > 128 {
+		errs[field] = "must be at most 128 characters"
+	}
+}
+
 func OneOf(field, value string, allowed []string, errs map[string]string) {
 	if strings.TrimSpace(value) == "" {
 		errs[field] = "is required"

@@ -12,6 +12,7 @@ const (
 	CodeValidationError = "validation_error"
 	CodeNotFound        = "not_found"
 	CodeConflict        = "conflict"
+	CodeRateLimited     = "rate_limited"
 )
 
 type Error struct {
@@ -89,6 +90,16 @@ func Conflict(message string, details map[string]any) Error {
 	}
 
 	err := New(http.StatusConflict, CodeConflict, message)
+	err.Details = details
+	return err
+}
+
+func TooManyRequests(message string, details map[string]any) Error {
+	if message == "" {
+		message = "too many requests"
+	}
+
+	err := New(http.StatusTooManyRequests, CodeRateLimited, message)
 	err.Details = details
 	return err
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	authpassword "github.com/miloyuans/openauthing/internal/auth/password"
 	"github.com/miloyuans/openauthing/internal/shared/apierror"
 	"github.com/miloyuans/openauthing/internal/shared/validate"
 	"github.com/miloyuans/openauthing/internal/store"
@@ -21,11 +22,28 @@ var (
 )
 
 type UserService struct {
-	repo repo.UserRepository
+	repo           repo.UserRepository
+	passwordHasher PasswordHasher
+}
+
+type PasswordHasher interface {
+	Hash(plain string) (string, error)
+	Algorithm() string
 }
 
 func NewUserService(repo repo.UserRepository) *UserService {
-	return &UserService{repo: repo}
+	return NewUserServiceWithPasswordHasher(repo, authpassword.NewArgon2ID())
+}
+
+func NewUserServiceWithPasswordHasher(repo repo.UserRepository, passwordHasher PasswordHasher) *UserService {
+	if passwordHasher == nil {
+		passwordHasher = authpassword.NewArgon2ID()
+	}
+
+	return &UserService{
+		repo:           repo,
+		passwordHasher: passwordHasher,
+	}
 }
 
 func (s *UserService) List(ctx context.Context, filter domain.UserListFilter) ([]domain.User, error) {
@@ -53,12 +71,15 @@ func (s *UserService) Create(ctx context.Context, input domain.CreateUserInput) 
 		Email:        strings.TrimSpace(input.Email),
 		Phone:        strings.TrimSpace(input.Phone),
 		DisplayName:  strings.TrimSpace(input.DisplayName),
-		PasswordHash: input.PasswordHash,
+		PasswordHash: strings.TrimSpace(input.PasswordHash),
 		PasswordAlgo: strings.TrimSpace(input.PasswordAlgo),
 		Status:       strings.TrimSpace(input.Status),
 		Source:       strings.TrimSpace(input.Source),
 	}
 
+	if err := applyCreatePassword(&model, input, s.passwordHasher); err != nil {
+		return domain.User{}, err
+	}
 	applyUserDefaults(&model)
 	if err := validateCreateUser(model); err != nil {
 		return domain.User{}, err
@@ -102,6 +123,9 @@ func (s *UserService) Update(ctx context.Context, id string, input domain.Update
 	}
 
 	applyUserPatch(&current, input)
+	if err := applyUpdatePassword(&current, input, s.passwordHasher); err != nil {
+		return domain.User{}, err
+	}
 	applyUserDefaults(&current)
 
 	if err := validateUpdateUser(current); err != nil {
@@ -142,7 +166,7 @@ func applyUserPatch(user *domain.User, input domain.UpdateUserInput) {
 		user.DisplayName = strings.TrimSpace(*input.DisplayName)
 	}
 	if input.PasswordHash != nil {
-		user.PasswordHash = *input.PasswordHash
+		user.PasswordHash = strings.TrimSpace(*input.PasswordHash)
 	}
 	if input.PasswordAlgo != nil {
 		user.PasswordAlgo = strings.TrimSpace(*input.PasswordAlgo)
@@ -155,6 +179,76 @@ func applyUserPatch(user *domain.User, input domain.UpdateUserInput) {
 	}
 }
 
+func applyCreatePassword(user *domain.User, input domain.CreateUserInput, hasher PasswordHasher) error {
+	plainPassword := input.Password
+	if strings.TrimSpace(plainPassword) == "" {
+		return validatePasswordInputs(plainPassword, user.PasswordHash)
+	}
+
+	if err := validatePasswordInputs(plainPassword, user.PasswordHash); err != nil {
+		return err
+	}
+
+	passwordHash, err := hasher.Hash(plainPassword)
+	if err != nil {
+		return apierror.Internal()
+	}
+
+	user.PasswordHash = passwordHash
+	user.PasswordAlgo = hasher.Algorithm()
+	return nil
+}
+
+func applyUpdatePassword(user *domain.User, input domain.UpdateUserInput, hasher PasswordHasher) error {
+	if input.Password == nil {
+		return validatePasswordInputs("", user.PasswordHash)
+	}
+
+	plainPassword := *input.Password
+	if strings.TrimSpace(plainPassword) == "" {
+		return apierror.Validation(map[string]any{
+			"fields": map[string]string{"password": "is required"},
+		})
+	}
+	if err := validatePasswordInputs(plainPassword, user.PasswordHash); err != nil {
+		return err
+	}
+
+	passwordHash, err := hasher.Hash(plainPassword)
+	if err != nil {
+		return apierror.Internal()
+	}
+
+	user.PasswordHash = passwordHash
+	user.PasswordAlgo = hasher.Algorithm()
+	return nil
+}
+
+func validatePasswordInputs(password, passwordHash string) error {
+	fieldErrors := map[string]string{}
+	trimmedPassword := strings.TrimSpace(password)
+	trimmedHash := strings.TrimSpace(passwordHash)
+
+	if trimmedPassword != "" && trimmedHash != "" {
+		fieldErrors["password"] = "password and password_hash cannot be used together"
+		fieldErrors["password_hash"] = "password and password_hash cannot be used together"
+	}
+	if trimmedPassword != "" {
+		validate.Password("password", password, fieldErrors)
+	}
+	if trimmedHash != "" {
+		if err := authpassword.ValidateEncodedHash(trimmedHash); err != nil {
+			fieldErrors["password_hash"] = "must be a valid argon2id encoded hash"
+		}
+	}
+
+	if len(fieldErrors) > 0 {
+		return apierror.Validation(map[string]any{"fields": fieldErrors})
+	}
+
+	return nil
+}
+
 func validateCreateUser(user domain.User) error {
 	fieldErrors := map[string]string{}
 
@@ -165,6 +259,7 @@ func validateCreateUser(user domain.User) error {
 	validate.Email("email", user.Email, fieldErrors)
 	validate.Phone("phone", user.Phone, fieldErrors)
 	validate.Required("display_name", user.DisplayName, fieldErrors)
+	validate.OneOf("password_algo", user.PasswordAlgo, []string{defaultPasswordAlgo}, fieldErrors)
 	validate.OneOf("status", user.Status, allowedUserStatuses, fieldErrors)
 	validate.OneOf("source", user.Source, allowedUserSources, fieldErrors)
 

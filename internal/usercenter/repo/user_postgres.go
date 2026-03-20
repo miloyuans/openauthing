@@ -2,8 +2,10 @@ package repo
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/miloyuans/openauthing/internal/store"
@@ -61,21 +63,7 @@ WHERE 1 = 1`
 	users := make([]domain.User, 0)
 	for rows.Next() {
 		var user domain.User
-		if err := rows.Scan(
-			&user.ID,
-			&user.TenantID,
-			&user.Username,
-			&user.Email,
-			&user.Phone,
-			&user.DisplayName,
-			&user.PasswordHash,
-			&user.PasswordAlgo,
-			&user.Status,
-			&user.Source,
-			&user.LastLoginAt,
-			&user.CreatedAt,
-			&user.UpdatedAt,
-		); err != nil {
+		if err := scanUser(rows, &user); err != nil {
 			return nil, err
 		}
 		users = append(users, user)
@@ -112,21 +100,7 @@ RETURNING id, tenant_id, username, email, phone, display_name, password_hash, pa
 	)
 
 	var created domain.User
-	if err := row.Scan(
-		&created.ID,
-		&created.TenantID,
-		&created.Username,
-		&created.Email,
-		&created.Phone,
-		&created.DisplayName,
-		&created.PasswordHash,
-		&created.PasswordAlgo,
-		&created.Status,
-		&created.Source,
-		&created.LastLoginAt,
-		&created.CreatedAt,
-		&created.UpdatedAt,
-	); err != nil {
+	if err := scanUser(row, &created); err != nil {
 		return domain.User{}, store.NormalizeError(err)
 	}
 
@@ -139,28 +113,51 @@ SELECT id, tenant_id, username, email, phone, display_name, password_hash, passw
 FROM users
 WHERE id = $1`
 
-	row := r.store.Executor(ctx).QueryRowContext(ctx, query, id)
+	return r.querySingle(ctx, query, id)
+}
 
-	var user domain.User
-	if err := row.Scan(
-		&user.ID,
-		&user.TenantID,
-		&user.Username,
-		&user.Email,
-		&user.Phone,
-		&user.DisplayName,
-		&user.PasswordHash,
-		&user.PasswordAlgo,
-		&user.Status,
-		&user.Source,
-		&user.LastLoginAt,
-		&user.CreatedAt,
-		&user.UpdatedAt,
-	); err != nil {
-		return domain.User{}, store.NormalizeError(err)
+func (r *PostgresUserRepository) GetByUsername(ctx context.Context, username string) (domain.User, error) {
+	query := `
+SELECT id, tenant_id, username, email, phone, display_name, password_hash, password_algo, status, source, last_login_at, created_at, updated_at
+FROM users
+WHERE username = $1
+ORDER BY created_at DESC
+LIMIT 2`
+
+	return r.querySingleLimited(ctx, query, username)
+}
+
+func (r *PostgresUserRepository) GetByEmail(ctx context.Context, email string) (domain.User, error) {
+	query := `
+SELECT id, tenant_id, username, email, phone, display_name, password_hash, password_algo, status, source, last_login_at, created_at, updated_at
+FROM users
+WHERE LOWER(email) = LOWER($1)
+ORDER BY created_at DESC
+LIMIT 2`
+
+	return r.querySingleLimited(ctx, query, email)
+}
+
+func (r *PostgresUserRepository) UpdateLastLoginAt(ctx context.Context, id uuid.UUID, lastLoginAt time.Time) error {
+	result, err := r.store.Executor(ctx).ExecContext(
+		ctx,
+		`UPDATE users SET last_login_at = $2, updated_at = NOW() WHERE id = $1`,
+		id,
+		lastLoginAt,
+	)
+	if err != nil {
+		return store.NormalizeError(err)
 	}
 
-	return user, nil
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return store.ErrNotFound
+	}
+
+	return nil
 }
 
 func (r *PostgresUserRepository) Update(ctx context.Context, user domain.User) (domain.User, error) {
@@ -193,21 +190,7 @@ RETURNING id, tenant_id, username, email, phone, display_name, password_hash, pa
 	)
 
 	var updated domain.User
-	if err := row.Scan(
-		&updated.ID,
-		&updated.TenantID,
-		&updated.Username,
-		&updated.Email,
-		&updated.Phone,
-		&updated.DisplayName,
-		&updated.PasswordHash,
-		&updated.PasswordAlgo,
-		&updated.Status,
-		&updated.Source,
-		&updated.LastLoginAt,
-		&updated.CreatedAt,
-		&updated.UpdatedAt,
-	); err != nil {
+	if err := scanUser(row, &updated); err != nil {
 		return domain.User{}, store.NormalizeError(err)
 	}
 
@@ -220,4 +203,91 @@ func nullableString(value string) any {
 	}
 
 	return value
+}
+
+func (r *PostgresUserRepository) querySingle(ctx context.Context, query string, args ...any) (domain.User, error) {
+	row := r.store.Executor(ctx).QueryRowContext(ctx, query, args...)
+
+	var user domain.User
+	if err := scanUser(row, &user); err != nil {
+		return domain.User{}, store.NormalizeError(err)
+	}
+
+	return user, nil
+}
+
+func (r *PostgresUserRepository) querySingleLimited(ctx context.Context, query string, args ...any) (domain.User, error) {
+	rows, err := r.store.Executor(ctx).QueryContext(ctx, query, args...)
+	if err != nil {
+		return domain.User{}, store.NormalizeError(err)
+	}
+	defer rows.Close()
+
+	users := make([]domain.User, 0, 2)
+	for rows.Next() {
+		var user domain.User
+		if err := scanUser(rows, &user); err != nil {
+			return domain.User{}, err
+		}
+		users = append(users, user)
+	}
+
+	if err := rows.Err(); err != nil {
+		return domain.User{}, err
+	}
+
+	switch len(users) {
+	case 0:
+		return domain.User{}, store.ErrNotFound
+	case 1:
+		return users[0], nil
+	default:
+		return domain.User{}, store.ErrAmbiguous
+	}
+}
+
+type userScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanUser(scanner userScanner, user *domain.User) error {
+	var email sql.NullString
+	var phone sql.NullString
+	var lastLoginAt sql.NullTime
+
+	if err := scanner.Scan(
+		&user.ID,
+		&user.TenantID,
+		&user.Username,
+		&email,
+		&phone,
+		&user.DisplayName,
+		&user.PasswordHash,
+		&user.PasswordAlgo,
+		&user.Status,
+		&user.Source,
+		&lastLoginAt,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+	); err != nil {
+		return err
+	}
+
+	user.Email = ""
+	if email.Valid {
+		user.Email = email.String
+	}
+
+	user.Phone = ""
+	if phone.Valid {
+		user.Phone = phone.String
+	}
+
+	user.LastLoginAt = nil
+	if lastLoginAt.Valid {
+		parsed := lastLoginAt.Time
+		user.LastLoginAt = &parsed
+	}
+
+	return nil
 }

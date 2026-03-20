@@ -13,6 +13,7 @@
 
 ```text
 cmd/server
+internal/auth
 internal/apps
 internal/config
 internal/logging
@@ -65,6 +66,11 @@ docs
 
 本任务新增 CRUD：
 
+- `POST /api/v1/auth/login`
+- `GET /api/v1/auth/me`
+- `POST /api/v1/auth/logout`
+- `GET /api/v1/sessions`
+- `POST /api/v1/sessions/:id/revoke`
 - `GET /api/v1/users`
 - `POST /api/v1/users`
 - `GET /api/v1/users/:id`
@@ -116,14 +122,70 @@ curl -X POST http://localhost:8080/api/v1/users \
     "username": "alice",
     "email": "alice@example.com",
     "display_name": "Alice",
-    "password_hash": "",
-    "password_algo": "argon2id",
+    "password": "secret123",
     "status": "active",
     "source": "local"
   }'
 ```
 
-说明：`password_hash` 当前允许为空，为后续认证任务预留；接口响应不会回传 `password_hash`。
+说明：如果提供 `password`，服务端会使用 Argon2id 生成 `password_hash` 并入库；接口响应不会回传 `password_hash`。如需导入已有哈希值，仍可直接传 `password_hash`，但必须是合法的 Argon2id 编码串。
+
+### 本地密码登录
+
+用户名登录：
+
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/login \
+  -c cookies.txt -b cookies.txt \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "alice",
+    "password": "secret123"
+  }'
+```
+
+邮箱登录：
+
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/login \
+  -c cookies.txt -b cookies.txt \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "alice@example.com",
+    "password": "secret123"
+  }'
+```
+
+说明：登录接口当前带内存版限流占位，主要用于后续接入 Redis 限流前的最小保护。
+说明：登录成功后会下发 `openauthing_session` cookie。cookie 中保存原始 sid，数据库 `auth_sessions.sid` 中保存的是 sid 的 HMAC-SHA256 哈希值。
+
+### 读取当前会话
+
+```bash
+curl -c cookies.txt -b cookies.txt \
+  http://localhost:8080/api/v1/auth/me
+```
+
+### 列出当前用户会话
+
+```bash
+curl -c cookies.txt -b cookies.txt \
+  http://localhost:8080/api/v1/sessions
+```
+
+### 撤销指定会话
+
+```bash
+curl -X POST -c cookies.txt -b cookies.txt \
+  http://localhost:8080/api/v1/sessions/SESSION_ID/revoke
+```
+
+### 登出当前会话
+
+```bash
+curl -X POST -c cookies.txt -b cookies.txt \
+  http://localhost:8080/api/v1/auth/logout
+```
 
 ### 查询用户列表
 
@@ -225,6 +287,10 @@ Repo 层支持事务上下文。当前通过 `store.WithinTx(ctx, fn)` 将 `sql.
 - [`000003_core_identity.down.sql`](./migrations/000003_core_identity.down.sql)
 - [`000004_crud_api_baseline.up.sql`](./migrations/000004_crud_api_baseline.up.sql)
 - [`000004_crud_api_baseline.down.sql`](./migrations/000004_crud_api_baseline.down.sql)
+- [`000005_auth_login_baseline.up.sql`](./migrations/000005_auth_login_baseline.up.sql)
+- [`000005_auth_login_baseline.down.sql`](./migrations/000005_auth_login_baseline.down.sql)
+- [`000006_auth_sessions.up.sql`](./migrations/000006_auth_sessions.up.sql)
+- [`000006_auth_sessions.down.sql`](./migrations/000006_auth_sessions.down.sql)
 
 执行：
 
@@ -275,6 +341,10 @@ make migrate-down
 - user repo 事务上下文与过滤查询
 - user service 校验和错误映射
 - user handler 基础创建接口
+- Argon2id 密码 hash / verify
+- auth login service 成功 / 失败 / 限流
+- auth login handler
+- auth session repo / middleware / me / logout / revoke
 - migration 验证脚本检查核心表和唯一索引
 
 执行：
@@ -291,7 +361,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify_migrations.ps1
 
 ## 当前限制
 
-- 当前只实现基础 CRUD，没有后台鉴权
+- 当前已实现中心 session 和 HttpOnly cookie，但还没有 JWT 或协议级单点登出
 - groups / roles / apps 暂时只实现列表和创建，未实现按 id 查询和更新
+- 当前登录接口按全局 `username` 或 `email` 查找；如果多租户下出现重复标识，会拒绝登录并在服务端记录审计日志
 - `/readyz` 仍然只检查关键配置是否存在，不做真实数据库连通性探测
-- TODO：后续任务再补事务型服务用例、更多 handler 测试、以及 users 与 groups/roles 的绑定 API
+- TODO：后续任务再补 OIDC / SAML / CAS 的会话映射、单点登出和 Redis 会话缓存
