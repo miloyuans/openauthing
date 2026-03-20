@@ -1,0 +1,24 @@
+{
+  "app": {
+    "name": "openauthing",
+    "env": "development"
+  },
+  "http": {
+    "addr": ":8080",
+    "allowed_origins": [
+      "http://localhost:5173"
+    ]
+  },
+  "postgres": {
+    "dsn": "postgres://openauthing@localhost:5432/openauthing?sslmode=disable"
+  },
+  "redis": {
+    "addr": "localhost:6379"
+  },
+  "log": {
+    "level": "info"
+  },
+  "session": {
+    "secret": "change-me-in-local-dev-only"
+  }
+}

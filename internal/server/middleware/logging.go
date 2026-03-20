@@ -1,0 +1,39 @@
+package middleware
+
+import (
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/miloyuans/openauthing/internal/shared/requestid"
+)
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func Logging(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+
+			next.ServeHTTP(recorder, r)
+
+			logger.Info("request completed",
+				"request_id", requestid.FromContext(r.Context()),
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", recorder.status,
+				"latency_ms", time.Since(start).Milliseconds(),
+				"remote_addr", r.RemoteAddr,
+			)
+		})
+	}
+}

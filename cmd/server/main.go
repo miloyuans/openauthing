@@ -2,17 +2,31 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
+	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/miloyuans/openauthing/internal/config"
+	"github.com/miloyuans/openauthing/internal/logging"
 	"github.com/miloyuans/openauthing/internal/server"
 )
 
 func main() {
-	cfg := config.Load()
-	srv := server.New(cfg)
+	cfg, err := config.Load()
+	if err != nil {
+		slog.New(slog.NewJSONHandler(os.Stdout, nil)).Error("failed to load config", "error", err)
+		os.Exit(1)
+	}
+
+	logger, err := logging.New(cfg.Log.Level)
+	if err != nil {
+		slog.New(slog.NewJSONHandler(os.Stdout, nil)).Error("failed to initialize logger", "error", err)
+		os.Exit(1)
+	}
+
+	srv := server.New(cfg, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -22,19 +36,21 @@ func main() {
 		errCh <- srv.Start()
 	}()
 
-	log.Printf("openauthing listening on %s", cfg.HTTP.Addr)
+	logger.Info("server started", "addr", cfg.HTTP.Addr, "app", cfg.App.Name, "env", cfg.App.Env)
 
 	select {
 	case err := <-errCh:
 		if err != nil {
-			log.Fatalf("server exited with error: %v", err)
+			logger.Error("server exited", "error", err)
+			os.Exit(1)
 		}
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.ShutdownTimeout)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			log.Fatalf("server shutdown failed: %v", err)
+			logger.Error("server shutdown failed", "error", err)
+			os.Exit(1)
 		}
 	}
 }

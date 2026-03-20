@@ -1,0 +1,66 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: openauthing
+      POSTGRES_DB: openauthing
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/migrations:ro
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  app:
+    build:
+      context: .
+      dockerfile: deploy/docker/app.Dockerfile
+    working_dir: /workspace
+    command: go run ./cmd/server
+    environment:
+      OPENAUTHING_CONFIG_FILE: /workspace/config.example.json
+      OPENAUTHING_APP_NAME: openauthing
+      OPENAUTHING_ENV: development
+      OPENAUTHING_HTTP_ADDR: :8080
+      OPENAUTHING_HTTP_ALLOWED_ORIGINS: http://localhost:5173
+      OPENAUTHING_POSTGRES_DSN: postgres://openauthing@postgres:5432/openauthing?sslmode=disable
+      OPENAUTHING_REDIS_ADDR: redis:6379
+      OPENAUTHING_LOG_LEVEL: info
+      OPENAUTHING_SESSION_SECRET: change-me-in-local-dev-only
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/workspace
+      - go_mod_cache:/go/pkg/mod
+      - go_build_cache:/root/.cache/go-build
+    depends_on:
+      - postgres
+      - redis
+
+  admin:
+    build:
+      context: .
+      dockerfile: deploy/docker/admin.Dockerfile
+    working_dir: /workspace/web/admin
+    command: npm run dev -- --host 0.0.0.0
+    environment:
+      VITE_API_BASE_URL: http://localhost:8080
+    ports:
+      - "5173:5173"
+    volumes:
+      - .:/workspace
+      - admin_node_modules:/workspace/web/admin/node_modules
+
+volumes:
+  postgres_data:
+  redis_data:
+  go_mod_cache:
+  go_build_cache:
+  admin_node_modules:
