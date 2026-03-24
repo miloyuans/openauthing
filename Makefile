@@ -9,7 +9,7 @@ dev:
 	$(COMPOSE) up --build
 
 test:
-	$(COMPOSE) run --rm app go test ./...
+	$(COMPOSE) run --rm app go test -mod=mod ./...
 	$(COMPOSE) run --rm admin npm run build
 
 build:

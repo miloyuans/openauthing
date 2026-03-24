@@ -24,7 +24,7 @@ services:
       context: .
       dockerfile: deploy/docker/app.Dockerfile
     working_dir: /workspace
-    command: go run ./cmd/server
+    command: go run -mod=mod ./cmd/server
     environment:
       OPENAUTHING_CONFIG_FILE: /workspace/config.example.json
       OPENAUTHING_APP_NAME: openauthing
