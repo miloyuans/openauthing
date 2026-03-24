@@ -438,6 +438,8 @@ Repo 层支持事务上下文。当前通过 `store.WithinTx(ctx, fn)` 将 `sql.
 - [`000008_oidc_code_flow.down.sql`](./migrations/000008_oidc_code_flow.down.sql)
 - [`000009_oidc_runtime_tokens.up.sql`](./migrations/000009_oidc_runtime_tokens.up.sql)
 - [`000009_oidc_runtime_tokens.down.sql`](./migrations/000009_oidc_runtime_tokens.down.sql)
+- [`000010_examples_jenkins_oidc.up.sql`](./migrations/000010_examples_jenkins_oidc.up.sql)
+- [`000010_examples_jenkins_oidc.down.sql`](./migrations/000010_examples_jenkins_oidc.down.sql)
 
 执行：
 
@@ -477,6 +479,43 @@ make migrate-up
 make migrate-down
 ```
 
+## Jenkins OIDC 联调样例
+
+仓库已提供可复现的 Jenkins OIDC 示例目录：
+
+- [`examples/jenkins-oidc/docker-compose.yml`](./examples/jenkins-oidc/docker-compose.yml)
+- [`examples/jenkins-oidc/scripts/bootstrap.ps1`](./examples/jenkins-oidc/scripts/bootstrap.ps1)
+- [`examples/jenkins-oidc/seed/jenkins_oidc_seed.sql`](./examples/jenkins-oidc/seed/jenkins_oidc_seed.sql)
+- [`examples/jenkins-oidc/README.md`](./examples/jenkins-oidc/README.md)
+
+这个示例会启动：
+
+- `openauthing`
+- `jenkins`
+- `postgres`
+- `redis`
+
+并自动完成：
+
+- 执行全部 migration
+- 创建 Jenkins 演示 tenant / application / OIDC client
+- 创建演示测试用户
+
+启动命令：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\examples\jenkins-oidc\scripts\bootstrap.ps1
+```
+
+启动后默认访问地址：
+
+- openauthing: [http://localhost:8080](http://localhost:8080)
+- Jenkins: [http://localhost:8081](http://localhost:8081)
+
+Jenkins 侧需要安装并启用的插件、OIDC 字段映射、回调地址和常见错误排查，见：
+
+- [`examples/jenkins-oidc/README.md`](./examples/jenkins-oidc/README.md)
+
 ## 测试
 
 当前测试覆盖：
@@ -492,6 +531,7 @@ make migrate-down
 - auth login service 成功 / 失败 / 限流
 - auth login handler
 - auth session repo / middleware / me / logout / revoke
+- Jenkins OIDC example 资产校验
 - migration 验证脚本检查核心表和唯一索引
 
 执行：

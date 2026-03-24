@@ -1,0 +1,1 @@
+-- no schema change for Jenkins OIDC example assets

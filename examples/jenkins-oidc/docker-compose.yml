@@ -1,0 +1,67 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: openauthing
+      POSTGRES_DB: openauthing
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - jenkins_oidc_postgres_data:/var/lib/postgresql/data
+      - ../../:/workspace:ro
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - jenkins_oidc_redis_data:/data
+
+  openauthing:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/app.Dockerfile
+    working_dir: /workspace
+    command: go run -mod=mod ./cmd/server
+    environment:
+      OPENAUTHING_APP_NAME: openauthing
+      OPENAUTHING_ENV: development
+      OPENAUTHING_HTTP_ADDR: :8080
+      OPENAUTHING_HTTP_ALLOWED_ORIGINS: http://localhost:8081,http://host.docker.internal:8081
+      OPENAUTHING_POSTGRES_DSN: postgres://openauthing@postgres:5432/openauthing?sslmode=disable
+      OPENAUTHING_REDIS_ADDR: redis:6379
+      OPENAUTHING_LOG_LEVEL: info
+      OPENAUTHING_SESSION_SECRET: change-me-in-local-dev-only
+      OPENAUTHING_OIDC_ISSUER: http://host.docker.internal:8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../../:/workspace
+      - jenkins_oidc_go_mod_cache:/go/pkg/mod
+      - jenkins_oidc_go_build_cache:/root/.cache/go-build
+    depends_on:
+      - postgres
+      - redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  jenkins:
+    build:
+      context: ./jenkins
+      dockerfile: Dockerfile
+    environment:
+      JAVA_OPTS: -Djenkins.install.runSetupWizard=false
+      JENKINS_URL: http://localhost:8081/
+    ports:
+      - "8081:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_oidc_jenkins_home:/var/jenkins_home
+    depends_on:
+      - openauthing
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  jenkins_oidc_postgres_data:
+  jenkins_oidc_redis_data:
+  jenkins_oidc_go_mod_cache:
+  jenkins_oidc_go_build_cache:
+  jenkins_oidc_jenkins_home:
