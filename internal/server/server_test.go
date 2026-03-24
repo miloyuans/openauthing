@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/miloyuans/openauthing/internal/config"
@@ -283,5 +284,45 @@ func TestOIDCJWKSEndpoint(t *testing.T) {
 
 	if payload.Keys[0].KTY != "RSA" || payload.Keys[0].Alg != "RS256" || payload.Keys[0].KID == "" || payload.Keys[0].N == "" || payload.Keys[0].E == "" {
 		t.Fatalf("unexpected jwk payload: %#v", payload.Keys[0])
+	}
+}
+
+func TestSAMLIDPMetadataEndpoint(t *testing.T) {
+	srv := newTestServer(t, config.Config{
+		App: config.AppConfig{Name: "openauthing", Env: "test"},
+		HTTP: config.HTTPConfig{
+			Addr:           ":0",
+			AllowedOrigins: []string{"http://localhost:5173"},
+		},
+		Postgres: config.PostgresConfig{DSN: "postgres://openauthing@localhost:5432/openauthing?sslmode=disable"},
+		Redis:    config.RedisConfig{Addr: "redis:6379"},
+		Log:      config.LogConfig{Level: "debug"},
+		Session:  config.SessionConfig{Secret: "test-session-secret"},
+		OIDC:     config.OIDCConfig{Issuer: "https://iam.example.test"},
+		SAML:     config.SAMLConfig{IDPEntityID: "https://iam.example.test/saml/idp/metadata"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/saml/idp/metadata", nil)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	if contentType := rec.Header().Get("Content-Type"); contentType != "application/samlmetadata+xml; charset=utf-8" {
+		t.Fatalf("unexpected content type: %q", contentType)
+	}
+
+	body := rec.Body.String()
+	for _, expected := range []string{
+		`entityID="https://iam.example.test/saml/idp/metadata"`,
+		"SingleSignOnService",
+		"SingleLogoutService",
+		"X509Certificate",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected %q in metadata xml: %s", expected, body)
+		}
 	}
 }

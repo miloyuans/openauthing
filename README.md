@@ -52,6 +52,9 @@ docs
 | oidc issuer | `OPENAUTHING_OIDC_ISSUER` | `http://localhost:8080` |
 | oidc signing key file | `OPENAUTHING_OIDC_SIGNING_KEY_FILE` | `./deploy/keys/oidc-signing.pem` |
 | oidc authorization code ttl | `OPENAUTHING_OIDC_AUTHORIZATION_CODE_TTL_SECONDS` | `300` |
+| saml idp entity id | `OPENAUTHING_SAML_IDP_ENTITY_ID` | `http://localhost:8080/saml/idp/metadata` |
+| saml certificate file | `OPENAUTHING_SAML_IDP_CERT_FILE` | `./deploy/keys/saml-idp-cert.pem` |
+| saml private key file | `OPENAUTHING_SAML_IDP_KEY_FILE` | `./deploy/keys/saml-idp-key.pem` |
 | config file path | `OPENAUTHING_CONFIG_FILE` | `./config.example.json` |
 
 参考：
@@ -74,6 +77,7 @@ docs
 - `POST /oauth2/revoke`
 - `GET /oauth2/logout`
 - `POST /oauth2/logout`
+- `GET /saml/idp/metadata`
 
 本任务新增 CRUD：
 
@@ -92,6 +96,9 @@ docs
 - `POST /api/v1/roles`
 - `GET /api/v1/apps`
 - `POST /api/v1/apps`
+- `GET /api/v1/apps/:id/saml`
+- `PUT /api/v1/apps/:id/saml`
+- `POST /api/v1/apps/:id/saml/import-metadata`
 
 ### 统一成功响应
 
@@ -149,6 +156,58 @@ curl http://localhost:8080/.well-known/jwks.json
 ```
 
 说明：当前只提供 `RS256` 签名公钥。若未配置 `OPENAUTHING_OIDC_SIGNING_KEY_FILE`，服务启动时会生成一把仅当前进程可用的临时 RSA 私钥；重启后 `kid` 会变化，只适合本地开发。
+
+### SAML IdP Metadata
+
+```bash
+curl http://localhost:8080/saml/idp/metadata
+```
+
+说明：
+
+- 当前返回标准 XML metadata
+- 默认会输出 `entityID`、`SingleSignOnService`、`SingleLogoutService` 和签名证书
+- 若未配置 `OPENAUTHING_SAML_IDP_CERT_FILE` / `OPENAUTHING_SAML_IDP_KEY_FILE`，服务启动时会自动生成一张仅当前进程可用的开发证书
+- 生产环境建议显式配置固定证书与私钥文件，避免重启后证书变化
+
+### 保存 SAML SP 配置
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/apps/APP_ID/saml \
+  -H "Content-Type: application/json" \
+  -d '{
+    "entity_id": "https://sp.example.test/metadata",
+    "acs_url": "https://sp.example.test/saml/acs",
+    "slo_url": "https://sp.example.test/saml/slo",
+    "nameid_format": "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
+    "want_assertions_signed": true,
+    "want_response_signed": false,
+    "sign_authn_request": false,
+    "encrypt_assertion": false,
+    "attribute_mapping": {
+      "username": "preferred_username",
+      "email": "email",
+      "name": "name"
+    }
+  }'
+```
+
+### 导入 SAML SP Metadata
+
+```bash
+curl -X POST http://localhost:8080/api/v1/apps/APP_ID/saml/import-metadata \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata_xml": "<EntityDescriptor>...</EntityDescriptor>"
+  }'
+```
+
+说明：
+
+- 当前会解析 `entity_id`、`AssertionConsumerService`、`SingleLogoutService`、`NameIDFormat`
+- 会解析 `WantAssertionsSigned`、`AuthnRequestsSigned`
+- 会提取首个 `X509Certificate`
+- metadata 解析失败时会返回统一 JSON 错误，并把错误挂到 `metadata_xml` 字段
 
 ### OIDC Authorization Code + PKCE 本地联调
 
@@ -442,6 +501,8 @@ Repo 层支持事务上下文。当前通过 `store.WithinTx(ctx, fn)` 将 `sql.
 - [`000010_examples_jenkins_oidc.down.sql`](./migrations/000010_examples_jenkins_oidc.down.sql)
 - [`000011_examples_jumpserver_oidc.up.sql`](./migrations/000011_examples_jumpserver_oidc.up.sql)
 - [`000011_examples_jumpserver_oidc.down.sql`](./migrations/000011_examples_jumpserver_oidc.down.sql)
+- [`000012_saml_service_providers.up.sql`](./migrations/000012_saml_service_providers.up.sql)
+- [`000012_saml_service_providers.down.sql`](./migrations/000012_saml_service_providers.down.sql)
 
 执行：
 
@@ -568,6 +629,7 @@ powershell -ExecutionPolicy Bypass -File .\examples\jumpserver-oidc\scripts\boot
 - auth login service 成功 / 失败 / 限流
 - auth login handler
 - auth session repo / middleware / me / logout / revoke
+- SAML IdP metadata 输出与 SP metadata 导入
 - Jenkins OIDC example 资产校验
 - JumpServer OIDC example 资产校验
 - migration 验证脚本检查核心表和唯一索引
@@ -588,6 +650,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify_migrations.ps1
 
 - 当前中心 session 仍以数据库 + HttpOnly cookie 为主；OIDC access token / id token 已签发 JWT，并已支持 `userinfo`、`revoke`、`logout` 和 refresh token rotation，但协议级前后端联动单点登出还未实现
 - 当前已实现 OIDC Discovery、JWKS、Authorization Code + PKCE、refresh token grant、token revoke 和 RP 发起的基础 logout，但动态 client 注册、consent 页面、`id_token_hint` 校验和更完整的 session family 风险处置还未实现
+- 当前 SAML 只完成了 IdP metadata、SP metadata 导入和 SP 配置管理，还没有 AuthnRequest / Assertion / SSO / SLO 主链路
 - groups / roles / apps 暂时只实现列表和创建，未实现按 id 查询和更新
 - 当前登录接口按全局 `username` 或 `email` 查找；如果多租户下出现重复标识，会拒绝登录并在服务端记录审计日志
 - `/readyz` 仍然只检查关键配置是否存在，不做真实数据库连通性探测

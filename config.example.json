@@ -25,5 +25,10 @@
     "issuer": "http://localhost:8080",
     "signing_key_file": "",
     "authorization_code_ttl_seconds": 300
+  },
+  "saml": {
+    "idp_entity_id": "",
+    "certificate_file": "",
+    "private_key_file": ""
   }
 }

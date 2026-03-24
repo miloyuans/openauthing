@@ -29,6 +29,7 @@ type Config struct {
 	Log      LogConfig      `json:"log"`
 	Session  SessionConfig  `json:"session"`
 	OIDC     OIDCConfig     `json:"oidc"`
+	SAML     SAMLConfig     `json:"saml"`
 }
 
 type AppConfig struct {
@@ -61,6 +62,12 @@ type OIDCConfig struct {
 	Issuer                      string `json:"issuer"`
 	SigningKeyFile              string `json:"signing_key_file"`
 	AuthorizationCodeTTLSeconds int    `json:"authorization_code_ttl_seconds"`
+}
+
+type SAMLConfig struct {
+	IDPEntityID    string `json:"idp_entity_id"`
+	CertificateFile string `json:"certificate_file"`
+	PrivateKeyFile  string `json:"private_key_file"`
 }
 
 func Load() (Config, error) {
@@ -110,6 +117,9 @@ func Load() (Config, error) {
 		"OPENAUTHING_OIDC_AUTHORIZATION_CODE_TTL_SECONDS",
 		cfg.OIDC.AuthorizationCodeTTLSeconds,
 	)
+	cfg.SAML.IDPEntityID = getEnv("OPENAUTHING_SAML_IDP_ENTITY_ID", cfg.SAML.IDPEntityID)
+	cfg.SAML.CertificateFile = getEnv("OPENAUTHING_SAML_IDP_CERT_FILE", cfg.SAML.CertificateFile)
+	cfg.SAML.PrivateKeyFile = getEnv("OPENAUTHING_SAML_IDP_KEY_FILE", cfg.SAML.PrivateKeyFile)
 
 	if origins, ok := lookupEnv("OPENAUTHING_HTTP_ALLOWED_ORIGINS"); ok {
 		cfg.HTTP.AllowedOrigins = splitCSV(origins)
@@ -170,6 +180,10 @@ func (c Config) validate() error {
 		return fmt.Errorf("oidc.authorization_code_ttl_seconds must be greater than 0")
 	}
 
+	if err := validateSAMLConfig(c.SAML); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -190,6 +204,20 @@ func validateOIDCIssuer(raw string) error {
 
 	if strings.TrimSpace(parsed.Host) == "" {
 		return fmt.Errorf("oidc.issuer host must not be empty")
+	}
+
+	return nil
+}
+
+func validateSAMLConfig(c SAMLConfig) error {
+	certFile := strings.TrimSpace(c.CertificateFile)
+	keyFile := strings.TrimSpace(c.PrivateKeyFile)
+	if (certFile == "") != (keyFile == "") {
+		return fmt.Errorf("saml.certificate_file and saml.private_key_file must be configured together")
+	}
+
+	if strings.ContainsAny(c.IDPEntityID, " \t\r\n") {
+		return fmt.Errorf("saml.idp_entity_id must not contain whitespace")
 	}
 
 	return nil

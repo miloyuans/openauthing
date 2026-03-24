@@ -27,6 +27,10 @@ import (
 	platformhandler "github.com/miloyuans/openauthing/internal/platform/handler"
 	platformrepo "github.com/miloyuans/openauthing/internal/platform/repo"
 	platformservice "github.com/miloyuans/openauthing/internal/platform/service"
+	samlhandler "github.com/miloyuans/openauthing/internal/saml/handler"
+	samlkeys "github.com/miloyuans/openauthing/internal/saml/keys"
+	samlrepo "github.com/miloyuans/openauthing/internal/saml/repo"
+	samlservice "github.com/miloyuans/openauthing/internal/saml/service"
 	servermiddleware "github.com/miloyuans/openauthing/internal/server/middleware"
 	postgresstore "github.com/miloyuans/openauthing/internal/store/postgres"
 	usercenterhandler "github.com/miloyuans/openauthing/internal/usercenter/handler"
@@ -70,6 +74,21 @@ func New(cfg config.Config, logger *slog.Logger) (*Server, error) {
 		return nil, fmt.Errorf("create oidc key manager: %w", err)
 	}
 
+	samlIssuer := strings.TrimSpace(cfg.OIDC.Issuer)
+	if samlIssuer == "" {
+		samlIssuer = "http://localhost:8080"
+	}
+
+	samlEntityID := strings.TrimSpace(cfg.SAML.IDPEntityID)
+	if samlEntityID == "" {
+		samlEntityID = strings.TrimRight(samlIssuer, "/") + "/saml/idp/metadata"
+	}
+
+	samlKeyManager, err := samlkeys.NewManager(samlEntityID, cfg.SAML.CertificateFile, cfg.SAML.PrivateKeyFile, logger)
+	if err != nil {
+		return nil, fmt.Errorf("create saml key manager: %w", err)
+	}
+
 	readinessRepo := platformrepo.NewConfigReadinessRepository(cfg)
 	serviceName := cfg.App.Name
 	if serviceName == "" {
@@ -89,12 +108,16 @@ func New(cfg config.Config, logger *slog.Logger) (*Server, error) {
 	groupRepo := usercenterrepo.NewPostgresGroupRepository(store)
 	roleRepo := usercenterrepo.NewPostgresRoleRepository(store)
 	appRepo := appsrepo.NewPostgresApplicationRepository(store)
+	samlRepo := samlrepo.NewPostgresServiceProviderRepository(store)
 	oidcRepo := oidcrepo.NewPostgresRepository(store)
 	loginLimiter := authratelimit.NewMemoryLimiter(5, time.Minute)
 	authSvc := authservice.NewService(userRepo, sessionRepo, authpassword.NewArgon2ID(), loginLimiter, store, cfg.Session.Secret, logger)
 	oidcSvc := oidcservice.NewService(cfg.OIDC, oidcKeyManager, oidcRepo, oidcRepo, oidcRepo, oidcRepo, userRepo, authSvc, store, cfg.Session.Secret, logger)
 	oidcHandler := oidchandler.NewHandler(oidcSvc, authhandler.DefaultCookieName)
+	samlSvc := samlservice.NewService(cfg.SAML, samlIssuer, appRepo, samlRepo, samlKeyManager)
+	samlHandler := samlhandler.NewHandler(samlSvc)
 	oidcHandler.Register(router)
+	samlHandler.RegisterPublic(router)
 	authHandler := authhandler.NewHandler(
 		authSvc,
 		authhandler.DefaultCookieName,
@@ -112,6 +135,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Server, error) {
 	groupHandler.Register(apiRouter)
 	roleHandler.Register(apiRouter)
 	appHandler.Register(apiRouter)
+	samlHandler.RegisterAPI(apiRouter)
 	router.Mount("/api/v1", apiRouter)
 
 	s.httpServer = &http.Server{

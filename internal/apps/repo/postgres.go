@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/miloyuans/openauthing/internal/apps/domain"
 	"github.com/miloyuans/openauthing/internal/store"
 	postgresstore "github.com/miloyuans/openauthing/internal/store/postgres"
@@ -125,4 +126,30 @@ RETURNING id, tenant_id, name, code, type, status, homepage_url, icon_url, descr
 	}
 
 	return created, nil
+}
+
+func (r *PostgresApplicationRepository) GetByID(ctx context.Context, id uuid.UUID) (domain.Application, error) {
+	row := r.store.Executor(ctx).QueryRowContext(ctx, `
+SELECT id, tenant_id, name, code, type, status, homepage_url, icon_url, description, created_at, updated_at
+FROM applications
+WHERE id = $1`, id)
+
+	var app domain.Application
+	if err := row.Scan(
+		&app.ID,
+		&app.TenantID,
+		&app.Name,
+		&app.Code,
+		&app.Type,
+		&app.Status,
+		&app.HomepageURL,
+		&app.IconURL,
+		&app.Description,
+		&app.CreatedAt,
+		&app.UpdatedAt,
+	); err != nil {
+		return domain.Application{}, store.NormalizeError(err)
+	}
+
+	return app, nil
 }

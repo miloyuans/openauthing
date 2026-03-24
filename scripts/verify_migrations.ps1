@@ -87,6 +87,9 @@ BEGIN
     IF to_regclass('public.oidc_access_tokens') IS NULL THEN
         RAISE EXCEPTION 'missing table: oidc_access_tokens';
     END IF;
+    IF to_regclass('public.saml_service_providers') IS NULL THEN
+        RAISE EXCEPTION 'missing table: saml_service_providers';
+    END IF;
 END $$;
 
 DO $$
@@ -99,6 +102,7 @@ DECLARE
     role_one UUID;
     permission_one UUID;
     oidc_client_one UUID;
+    saml_app_one UUID;
 BEGIN
     INSERT INTO tenants (name, slug, status)
     VALUES ('Tenant One', 'tenant-one', 'active')
@@ -284,6 +288,53 @@ BEGIN
         ARRAY['openid', 'profile'], NOW() + INTERVAL '10 minutes'
     );
 
+    INSERT INTO applications (
+        tenant_id, name, code, type, status, homepage_url, icon_url, description
+    ) VALUES (
+        tenant_one, 'SAML Demo', 'saml-demo', 'saml-sp', 'active',
+        'https://saml.example.test', '', 'SAML demo app'
+    ) RETURNING id INTO saml_app_one;
+
+    INSERT INTO saml_service_providers (
+        app_id, entity_id, acs_url, slo_url, nameid_format, want_assertions_signed, want_response_signed,
+        sign_authn_request, encrypt_assertion, sp_metadata_xml, sp_x509_cert, attribute_mapping_jsonb
+    ) VALUES (
+        saml_app_one,
+        'https://sp.example.test/metadata',
+        'https://sp.example.test/saml/acs',
+        'https://sp.example.test/saml/slo',
+        'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress',
+        TRUE,
+        FALSE,
+        FALSE,
+        FALSE,
+        '<EntityDescriptor/>',
+        'MIICVERIFYCERT',
+        '{"email":"email"}'::jsonb
+    );
+
+    BEGIN
+        INSERT INTO applications (
+            tenant_id, name, code, type, status, homepage_url, icon_url, description
+        ) VALUES (
+            tenant_one, 'SAML Demo Two', 'saml-demo-two', 'saml-sp', 'active',
+            'https://saml2.example.test', '', 'SAML demo app two'
+        ) RETURNING id INTO saml_app_one;
+
+        INSERT INTO saml_service_providers (
+            app_id, entity_id, acs_url, slo_url, nameid_format
+        ) VALUES (
+            saml_app_one,
+            'https://sp.example.test/metadata',
+            'https://sp2.example.test/saml/acs',
+            '',
+            'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress'
+        );
+        RAISE EXCEPTION 'expected unique violation on saml_service_providers.entity_id';
+    EXCEPTION
+        WHEN unique_violation THEN NULL;
+    END;
+
     BEGIN
         INSERT INTO applications (
             tenant_id, name, code, type, status, homepage_url, icon_url, description
@@ -317,6 +368,9 @@ BEGIN
     END IF;
     IF to_regclass('public.oidc_authorization_codes') IS NOT NULL THEN
         RAISE EXCEPTION 'oidc_authorization_codes table should have been dropped';
+    END IF;
+    IF to_regclass('public.saml_service_providers') IS NOT NULL THEN
+        RAISE EXCEPTION 'saml_service_providers table should have been dropped';
     END IF;
     IF to_regclass('public.oidc_clients') IS NOT NULL THEN
         RAISE EXCEPTION 'oidc_clients table should have been dropped';
