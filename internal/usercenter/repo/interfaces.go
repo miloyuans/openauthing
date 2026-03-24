@@ -14,6 +14,8 @@ type UserRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (domain.User, error)
 	GetByUsername(ctx context.Context, username string) (domain.User, error)
 	GetByEmail(ctx context.Context, email string) (domain.User, error)
+	ListGroupCodes(ctx context.Context, userID uuid.UUID) ([]string, error)
+	ListRoleCodes(ctx context.Context, userID uuid.UUID) ([]string, error)
 	UpdateLastLoginAt(ctx context.Context, id uuid.UUID, lastLoginAt time.Time) error
 	Update(ctx context.Context, user domain.User) (domain.User, error)
 }

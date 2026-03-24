@@ -138,6 +138,24 @@ LIMIT 2`
 	return r.querySingleLimited(ctx, query, email)
 }
 
+func (r *PostgresUserRepository) ListGroupCodes(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	return r.listStrings(ctx, `
+SELECT g.code
+FROM groups g
+INNER JOIN user_groups ug ON ug.group_id = g.id
+WHERE ug.user_id = $1
+ORDER BY g.code ASC`, userID)
+}
+
+func (r *PostgresUserRepository) ListRoleCodes(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	return r.listStrings(ctx, `
+SELECT r.code
+FROM roles r
+INNER JOIN user_roles ur ON ur.role_id = r.id
+WHERE ur.user_id = $1
+ORDER BY r.code ASC`, userID)
+}
+
 func (r *PostgresUserRepository) UpdateLastLoginAt(ctx context.Context, id uuid.UUID, lastLoginAt time.Time) error {
 	result, err := r.store.Executor(ctx).ExecContext(
 		ctx,
@@ -244,6 +262,29 @@ func (r *PostgresUserRepository) querySingleLimited(ctx context.Context, query s
 	default:
 		return domain.User{}, store.ErrAmbiguous
 	}
+}
+
+func (r *PostgresUserRepository) listStrings(ctx context.Context, query string, args ...any) ([]string, error) {
+	rows, err := r.store.Executor(ctx).QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, store.NormalizeError(err)
+	}
+	defer rows.Close()
+
+	values := make([]string, 0)
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return values, nil
 }
 
 type userScanner interface {

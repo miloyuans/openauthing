@@ -42,7 +42,7 @@ func TestAuthorizeCreatesAuthorizationCode(t *testing.T) {
 			AccessTokenTTLSeconds:   600,
 			RefreshTokenTTLSeconds:  3600,
 		},
-	}, codeRepo, &fakeRefreshTokenRepo{}, &fakeUserRepo{}, &fakeSessionAuthenticator{
+	}, codeRepo, &fakeRefreshTokenRepo{}, &fakeAccessTokenRepo{}, &fakeUserRepo{}, &fakeSessionAuthenticator{
 		session: authdomain.Session{
 			ID:       sessionID,
 			TenantID: tenantID,
@@ -98,7 +98,7 @@ func TestAuthorizeReturnsLoginRequiredWhenSessionMissing(t *testing.T) {
 			AccessTokenTTLSeconds:   600,
 			RefreshTokenTTLSeconds:  3600,
 		},
-	}, &fakeAuthorizationCodeRepo{}, &fakeRefreshTokenRepo{}, &fakeUserRepo{}, &fakeSessionAuthenticator{}, &fakeTokenValueManager{}, &fakeTokenSigner{})
+	}, &fakeAuthorizationCodeRepo{}, &fakeRefreshTokenRepo{}, &fakeAccessTokenRepo{}, &fakeUserRepo{}, &fakeSessionAuthenticator{}, &fakeTokenValueManager{}, &fakeTokenSigner{})
 
 	_, err := service.Authorize(context.Background(), oidcdomain.AuthorizationRequest{
 		ResponseType:        oidcdomain.ResponseTypeCode,
@@ -145,6 +145,7 @@ func TestExchangeCodeIssuesTokensAndConsumesCode(t *testing.T) {
 		},
 	}
 	refreshRepo := &fakeRefreshTokenRepo{}
+	accessRepo := &fakeAccessTokenRepo{}
 	tokenSigner := &fakeTokenSigner{
 		tokens: []string{"access.jwt", "id.jwt"},
 	}
@@ -161,7 +162,7 @@ func TestExchangeCodeIssuesTokensAndConsumesCode(t *testing.T) {
 			AccessTokenTTLSeconds:   600,
 			RefreshTokenTTLSeconds:  3600,
 		},
-	}, codeRepo, refreshRepo, &fakeUserRepo{
+	}, codeRepo, refreshRepo, accessRepo, &fakeUserRepo{
 		user: userdomain.User{
 			ID:          userID,
 			TenantID:    tenantID,
@@ -236,7 +237,7 @@ func TestExchangeCodeRejectsWrongPKCEVerifier(t *testing.T) {
 			AccessTokenTTLSeconds:   600,
 			RefreshTokenTTLSeconds:  3600,
 		},
-	}, codeRepo, &fakeRefreshTokenRepo{}, &fakeUserRepo{}, &fakeSessionAuthenticator{}, &fakeTokenValueManager{
+	}, codeRepo, &fakeRefreshTokenRepo{}, &fakeAccessTokenRepo{}, &fakeUserRepo{}, &fakeSessionAuthenticator{}, &fakeTokenValueManager{
 		hashed: map[string]string{"raw-auth-code": "hashed-auth-code"},
 	}, &fakeTokenSigner{})
 
@@ -283,7 +284,7 @@ func TestExchangeCodeRejectsReplayedCode(t *testing.T) {
 			ExpiresAt:    fixedNow.Add(5 * time.Minute),
 			ConsumedAt:   &consumedAt,
 		},
-	}, &fakeRefreshTokenRepo{}, &fakeUserRepo{}, &fakeSessionAuthenticator{}, &fakeTokenValueManager{
+	}, &fakeRefreshTokenRepo{}, &fakeAccessTokenRepo{}, &fakeUserRepo{}, &fakeSessionAuthenticator{}, &fakeTokenValueManager{
 		hashed: map[string]string{"raw-auth-code": "hashed-auth-code"},
 	}, &fakeTokenSigner{})
 
@@ -302,14 +303,235 @@ func TestExchangeCodeRejectsReplayedCode(t *testing.T) {
 	assertProtocolError(t, err, oauthErrorInvalidGrant)
 }
 
+func TestUserInfoReturnsProfile(t *testing.T) {
+	fixedNow := time.Date(2026, 3, 24, 11, 0, 0, 0, time.UTC)
+	userID := uuid.MustParse("11111111-2222-3333-4444-555555555555")
+	tenantID := uuid.MustParse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	sessionID := uuid.MustParse("99999999-8888-7777-6666-555555555555")
+
+	service := newTestService(t, fixedNow, &fakeClientRepo{}, &fakeAuthorizationCodeRepo{}, &fakeRefreshTokenRepo{}, &fakeAccessTokenRepo{
+		tokenToReturn: oidcdomain.AccessToken{
+			ID:        uuid.New(),
+			ClientID:  "demo-public-client",
+			TenantID:  tenantID,
+			UserID:    userID,
+			SessionID: sessionID,
+			TokenHash: "hashed-access",
+			Scopes:    []string{"openid", "profile", "email"},
+			ExpiresAt: fixedNow.Add(5 * time.Minute),
+		},
+	}, &fakeUserRepo{
+		user: userdomain.User{
+			ID:          userID,
+			TenantID:    tenantID,
+			Username:    "alice",
+			Email:       "alice@example.com",
+			DisplayName: "Alice",
+			Status:      "active",
+		},
+		groups: []string{"platform"},
+		roles:  []string{"tenant_admin"},
+	}, &fakeSessionAuthenticator{}, &fakeTokenValueManager{
+		hashed: map[string]string{"access.jwt": "hashed-access"},
+	}, &fakeTokenSigner{})
+
+	info, err := service.UserInfo(context.Background(), "access.jwt")
+	if err != nil {
+		t.Fatalf("userinfo: %v", err)
+	}
+
+	if info.Sub != userID.String() || info.SID != sessionID.String() || info.PreferredUsername != "alice" {
+		t.Fatalf("unexpected userinfo payload: %#v", info)
+	}
+	if len(info.Groups) != 1 || info.Groups[0] != "platform" || len(info.Roles) != 1 || info.Roles[0] != "tenant_admin" {
+		t.Fatalf("expected groups/roles in userinfo, got %#v", info)
+	}
+}
+
+func TestRefreshTokenGrantRotatesRefreshToken(t *testing.T) {
+	fixedNow := time.Date(2026, 3, 24, 11, 0, 0, 0, time.UTC)
+	clientID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	userID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	tenantID := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
+	sessionID := uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd")
+	refreshID := uuid.MustParse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
+
+	refreshRepo := &fakeRefreshTokenRepo{
+		tokenToReturn: oidcdomain.RefreshToken{
+			ID:           refreshID,
+			OIDCClientID: clientID,
+			ClientID:     "demo-public-client",
+			TenantID:     tenantID,
+			UserID:       userID,
+			SessionID:    sessionID,
+			TokenHash:    "hashed-refresh",
+			Scopes:       []string{"openid", "profile"},
+			ExpiresAt:    fixedNow.Add(time.Hour),
+		},
+	}
+	accessRepo := &fakeAccessTokenRepo{}
+	tokenSigner := &fakeTokenSigner{
+		tokens: []string{"access-rotated.jwt", "id-rotated.jwt"},
+	}
+
+	service := newTestService(t, fixedNow, &fakeClientRepo{
+		client: oidcdomain.Client{
+			ID:                      clientID,
+			TenantID:                tenantID,
+			ClientID:                "demo-public-client",
+			GrantTypes:              []string{oidcdomain.GrantTypeAuthorizationCode, oidcdomain.GrantTypeRefreshToken},
+			TokenEndpointAuthMethod: oidcdomain.TokenEndpointAuthMethodNone,
+			AccessTokenTTLSeconds:   600,
+			RefreshTokenTTLSeconds:  3600,
+		},
+	}, &fakeAuthorizationCodeRepo{}, refreshRepo, accessRepo, &fakeUserRepo{
+		user: userdomain.User{
+			ID:          userID,
+			TenantID:    tenantID,
+			Username:    "alice",
+			Email:       "alice@example.com",
+			DisplayName: "Alice",
+			Status:      "active",
+		},
+	}, &fakeSessionAuthenticator{}, &fakeTokenValueManager{
+		generated: []string{"raw-refresh-rotated"},
+		hashed: map[string]string{
+			"raw-refresh":         "hashed-refresh",
+			"access-rotated.jwt":  "hashed-access-rotated",
+			"raw-refresh-rotated": "hashed-refresh-rotated",
+		},
+	}, tokenSigner)
+
+	response, err := service.ExchangeCode(context.Background(), oidcdomain.TokenRequest{
+		GrantType:        oidcdomain.GrantTypeRefreshToken,
+		RefreshToken:     "raw-refresh",
+		ClientID:         "demo-public-client",
+		ClientAuthMethod: oidcdomain.TokenEndpointAuthMethodNone,
+	})
+	if err != nil {
+		t.Fatalf("refresh token grant: %v", err)
+	}
+
+	if response.AccessToken != "access-rotated.jwt" || response.RefreshToken != "raw-refresh-rotated" {
+		t.Fatalf("unexpected refresh grant response: %#v", response)
+	}
+	if refreshRepo.rotatedID != refreshID || refreshRepo.rotatedReplacedByID == uuid.Nil {
+		t.Fatalf("expected refresh token rotation, got %#v", refreshRepo)
+	}
+	if accessRepo.created.TokenHash != "hashed-access-rotated" {
+		t.Fatalf("expected new access token to be persisted, got %#v", accessRepo.created)
+	}
+}
+
+func TestRefreshTokenReplayRevokesSessionTokens(t *testing.T) {
+	fixedNow := time.Date(2026, 3, 24, 11, 0, 0, 0, time.UTC)
+	clientID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	userID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	tenantID := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
+	sessionID := uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd")
+	refreshID := uuid.MustParse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
+	replacedByID := uuid.MustParse("ffffffff-ffff-ffff-ffff-ffffffffffff")
+	revokedAt := fixedNow.Add(-time.Minute)
+
+	refreshRepo := &fakeRefreshTokenRepo{
+		tokenToReturn: oidcdomain.RefreshToken{
+			ID:           refreshID,
+			OIDCClientID: clientID,
+			ClientID:     "demo-public-client",
+			TenantID:     tenantID,
+			UserID:       userID,
+			SessionID:    sessionID,
+			TokenHash:    "hashed-refresh",
+			Scopes:       []string{"openid"},
+			ExpiresAt:    fixedNow.Add(time.Hour),
+			RevokedAt:    &revokedAt,
+			ReplacedByID: &replacedByID,
+		},
+	}
+	accessRepo := &fakeAccessTokenRepo{}
+
+	service := newTestService(t, fixedNow, &fakeClientRepo{
+		client: oidcdomain.Client{
+			ID:                      clientID,
+			TenantID:                tenantID,
+			ClientID:                "demo-public-client",
+			GrantTypes:              []string{oidcdomain.GrantTypeRefreshToken},
+			TokenEndpointAuthMethod: oidcdomain.TokenEndpointAuthMethodNone,
+			AccessTokenTTLSeconds:   600,
+			RefreshTokenTTLSeconds:  3600,
+		},
+	}, &fakeAuthorizationCodeRepo{}, refreshRepo, accessRepo, &fakeUserRepo{}, &fakeSessionAuthenticator{}, &fakeTokenValueManager{
+		hashed: map[string]string{"raw-refresh": "hashed-refresh"},
+	}, &fakeTokenSigner{})
+
+	_, err := service.ExchangeCode(context.Background(), oidcdomain.TokenRequest{
+		GrantType:        oidcdomain.GrantTypeRefreshToken,
+		RefreshToken:     "raw-refresh",
+		ClientID:         "demo-public-client",
+		ClientAuthMethod: oidcdomain.TokenEndpointAuthMethodNone,
+	})
+	if err == nil {
+		t.Fatal("expected replayed refresh token to fail")
+	}
+
+	assertProtocolError(t, err, oauthErrorInvalidGrant)
+	if refreshRepo.replayMarkedID != refreshID || refreshRepo.revokeBySessionID != sessionID || accessRepo.revokeBySessionID != sessionID {
+		t.Fatalf("expected replay detection to revoke session tokens, got refresh=%#v access=%#v", refreshRepo, accessRepo)
+	}
+}
+
+func TestLogoutRevokesSessionTokensAndValidatesRedirect(t *testing.T) {
+	fixedNow := time.Date(2026, 3, 24, 11, 0, 0, 0, time.UTC)
+	clientID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	sessionID := uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd")
+	userID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	tenantID := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
+
+	refreshRepo := &fakeRefreshTokenRepo{}
+	accessRepo := &fakeAccessTokenRepo{}
+	sessions := &fakeSessionAuthenticator{
+		session: authdomain.Session{
+			ID:       sessionID,
+			TenantID: tenantID,
+			UserID:   userID,
+			Status:   authdomain.SessionStatusActive,
+		},
+	}
+
+	service := newTestService(t, fixedNow, &fakeClientRepo{
+		client: oidcdomain.Client{
+			ID:                     clientID,
+			TenantID:               tenantID,
+			ClientID:               "demo-public-client",
+			PostLogoutRedirectURIs: []string{"https://client.example.test/logout-callback"},
+		},
+	}, &fakeAuthorizationCodeRepo{}, refreshRepo, accessRepo, &fakeUserRepo{}, sessions, &fakeTokenValueManager{}, &fakeTokenSigner{})
+
+	result, err := service.Logout(context.Background(), "raw-sid", oidcdomain.LogoutRequest{
+		ClientID:              "demo-public-client",
+		PostLogoutRedirectURI: "https://client.example.test/logout-callback",
+	})
+	if err != nil {
+		t.Fatalf("logout: %v", err)
+	}
+
+	if !result.LoggedOut || result.RedirectURI != "https://client.example.test/logout-callback" {
+		t.Fatalf("unexpected logout result: %#v", result)
+	}
+	if sessions.loggedOutSessionID != sessionID || refreshRepo.revokeBySessionID != sessionID || accessRepo.revokeBySessionID != sessionID {
+		t.Fatalf("expected logout to revoke session tokens, got sessions=%#v refresh=%#v access=%#v", sessions, refreshRepo, accessRepo)
+	}
+}
+
 func newTestService(
 	t *testing.T,
 	now time.Time,
 	clients oidcrepo.ClientRepository,
 	authCodes oidcrepo.AuthorizationCodeRepository,
 	refreshTokens oidcrepo.RefreshTokenRepository,
+	accessTokens oidcrepo.AccessTokenRepository,
 	users UserRepository,
-	sessions SessionAuthenticator,
+	sessions SessionManager,
 	tokenValues TokenValueManager,
 	tokenSigner TokenSigner,
 ) *Service {
@@ -321,6 +543,7 @@ func newTestService(
 		clients,
 		authCodes,
 		refreshTokens,
+		accessTokens,
 		users,
 		sessions,
 		fakeTxManager{},
@@ -382,8 +605,19 @@ func (f *fakeAuthorizationCodeRepo) Consume(ctx context.Context, id uuid.UUID, c
 }
 
 type fakeRefreshTokenRepo struct {
-	created oidcdomain.RefreshToken
-	err     error
+	created                    oidcdomain.RefreshToken
+	tokenToReturn              oidcdomain.RefreshToken
+	err                        error
+	getErr                     error
+	rotateErr                  error
+	markReplayErr              error
+	revokeByHashErr            error
+	revokeBySessionErr         error
+	rotatedID                  uuid.UUID
+	rotatedReplacedByID        uuid.UUID
+	replayMarkedID             uuid.UUID
+	revokedTokenHash           string
+	revokeBySessionID          uuid.UUID
 }
 
 func (f *fakeRefreshTokenRepo) CreateRefreshToken(ctx context.Context, token oidcdomain.RefreshToken) (oidcdomain.RefreshToken, error) {
@@ -397,9 +631,84 @@ func (f *fakeRefreshTokenRepo) CreateRefreshToken(ctx context.Context, token oid
 	return token, nil
 }
 
+func (f *fakeRefreshTokenRepo) GetRefreshTokenByHashForUpdate(ctx context.Context, tokenHash string) (oidcdomain.RefreshToken, error) {
+	if f.getErr != nil {
+		return oidcdomain.RefreshToken{}, f.getErr
+	}
+	if f.tokenToReturn.TokenHash != tokenHash {
+		return oidcdomain.RefreshToken{}, store.ErrNotFound
+	}
+	return f.tokenToReturn, nil
+}
+
+func (f *fakeRefreshTokenRepo) RotateRefreshToken(ctx context.Context, id uuid.UUID, replacedByID uuid.UUID, changedAt time.Time) error {
+	f.rotatedID = id
+	f.rotatedReplacedByID = replacedByID
+	return f.rotateErr
+}
+
+func (f *fakeRefreshTokenRepo) MarkRefreshTokenReplay(ctx context.Context, id uuid.UUID, detectedAt time.Time) error {
+	f.replayMarkedID = id
+	return f.markReplayErr
+}
+
+func (f *fakeRefreshTokenRepo) RevokeRefreshTokenByHash(ctx context.Context, tokenHash string, revokedAt time.Time) error {
+	f.revokedTokenHash = tokenHash
+	return f.revokeByHashErr
+}
+
+func (f *fakeRefreshTokenRepo) RevokeRefreshTokensBySessionID(ctx context.Context, sessionID uuid.UUID, revokedAt time.Time) error {
+	f.revokeBySessionID = sessionID
+	return f.revokeBySessionErr
+}
+
+type fakeAccessTokenRepo struct {
+	created            oidcdomain.AccessToken
+	tokenToReturn      oidcdomain.AccessToken
+	err                error
+	getErr             error
+	revokeByHashErr    error
+	revokeBySessionErr error
+	revokedTokenHash   string
+	revokeBySessionID  uuid.UUID
+}
+
+func (f *fakeAccessTokenRepo) CreateAccessToken(ctx context.Context, token oidcdomain.AccessToken) (oidcdomain.AccessToken, error) {
+	if f.err != nil {
+		return oidcdomain.AccessToken{}, f.err
+	}
+	f.created = token
+	if token.ID == uuid.Nil {
+		token.ID = uuid.New()
+	}
+	return token, nil
+}
+
+func (f *fakeAccessTokenRepo) GetAccessTokenByHash(ctx context.Context, tokenHash string) (oidcdomain.AccessToken, error) {
+	if f.getErr != nil {
+		return oidcdomain.AccessToken{}, f.getErr
+	}
+	if f.tokenToReturn.TokenHash != tokenHash {
+		return oidcdomain.AccessToken{}, store.ErrNotFound
+	}
+	return f.tokenToReturn, nil
+}
+
+func (f *fakeAccessTokenRepo) RevokeAccessTokenByHash(ctx context.Context, tokenHash string, revokedAt time.Time) error {
+	f.revokedTokenHash = tokenHash
+	return f.revokeByHashErr
+}
+
+func (f *fakeAccessTokenRepo) RevokeAccessTokensBySessionID(ctx context.Context, sessionID uuid.UUID, revokedAt time.Time) error {
+	f.revokeBySessionID = sessionID
+	return f.revokeBySessionErr
+}
+
 type fakeUserRepo struct {
 	user userdomain.User
 	err  error
+	groups []string
+	roles  []string
 }
 
 func (f *fakeUserRepo) GetByID(ctx context.Context, id uuid.UUID) (userdomain.User, error) {
@@ -412,9 +721,25 @@ func (f *fakeUserRepo) GetByID(ctx context.Context, id uuid.UUID) (userdomain.Us
 	return f.user, nil
 }
 
+func (f *fakeUserRepo) ListGroupCodes(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	if f.user.ID != uuid.Nil && userID != f.user.ID {
+		return nil, store.ErrNotFound
+	}
+	return f.groups, nil
+}
+
+func (f *fakeUserRepo) ListRoleCodes(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	if f.user.ID != uuid.Nil && userID != f.user.ID {
+		return nil, store.ErrNotFound
+	}
+	return f.roles, nil
+}
+
 type fakeSessionAuthenticator struct {
 	session authdomain.Session
 	err     error
+	logoutErr error
+	loggedOutSessionID uuid.UUID
 }
 
 func (f *fakeSessionAuthenticator) Authenticate(ctx context.Context, sid string) (authdomain.Session, error) {
@@ -425,6 +750,11 @@ func (f *fakeSessionAuthenticator) Authenticate(ctx context.Context, sid string)
 		return authdomain.Session{}, store.ErrNotFound
 	}
 	return f.session, nil
+}
+
+func (f *fakeSessionAuthenticator) LogoutCurrent(ctx context.Context, session authdomain.Session) error {
+	f.loggedOutSessionID = session.ID
+	return f.logoutErr
 }
 
 type fakeTxManager struct{}

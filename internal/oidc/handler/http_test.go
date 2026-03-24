@@ -145,14 +145,103 @@ func TestTokenEndpointReturnsOAuthJSON(t *testing.T) {
 	}
 }
 
+func TestUserInfoEndpointReturnsProfile(t *testing.T) {
+	router := chi.NewRouter()
+	NewHandler(&stubOIDCService{
+		userInfo: oidcdomain.UserInfo{
+			Sub:               "user-1",
+			PreferredUsername: "alice",
+			Email:             "alice@example.com",
+			Name:              "Alice",
+			Groups:            []string{"platform"},
+			Roles:             []string{"tenant_admin"},
+			SID:               "session-1",
+		},
+	}, "").Register(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth2/userinfo", nil)
+	req.Header.Set("Authorization", "Bearer access.jwt")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	var payload oidcdomain.UserInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode userinfo response: %v", err)
+	}
+
+	if payload.Sub != "user-1" || payload.SID != "session-1" {
+		t.Fatalf("unexpected userinfo payload: %#v", payload)
+	}
+}
+
+func TestRevokeEndpointReturns200(t *testing.T) {
+	router := chi.NewRouter()
+	service := &stubOIDCService{}
+	NewHandler(service, "").Register(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/oauth2/revoke", strings.NewReader("token=refresh-token&token_type_hint=refresh_token&client_id=client-one"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	if service.lastRevokeRequest.Token != "refresh-token" || service.lastRevokeRequest.TokenTypeHint != oidcdomain.TokenTypeHintRefreshToken {
+		t.Fatalf("unexpected revoke request: %#v", service.lastRevokeRequest)
+	}
+}
+
+func TestLogoutEndpointClearsCookieAndRedirects(t *testing.T) {
+	router := chi.NewRouter()
+	NewHandler(&stubOIDCService{
+		logoutResult: oidcdomain.LogoutResult{
+			LoggedOut:   true,
+			RedirectURI: "https://client.example.test/logout-callback",
+		},
+	}, defaultSessionCookieName).Register(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth2/logout?client_id=client-one&post_logout_redirect_uri=https%3A%2F%2Fclient.example.test%2Flogout-callback", nil)
+	req.AddCookie(&http.Cookie{Name: defaultSessionCookieName, Value: "session-cookie"})
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected status 302, got %d", rec.Code)
+	}
+	if rec.Header().Get("Location") != "https://client.example.test/logout-callback" {
+		t.Fatalf("unexpected logout redirect: %q", rec.Header().Get("Location"))
+	}
+
+	cookies := rec.Result().Cookies()
+	if len(cookies) == 0 || cookies[0].Name != defaultSessionCookieName || cookies[0].MaxAge != -1 {
+		t.Fatalf("expected cleared session cookie, got %#v", cookies)
+	}
+}
+
 type stubOIDCService struct {
-	discovery       oidcdomain.DiscoveryDocument
-	jwks            oidcdomain.JWKSet
-	authorizeResult oidcdomain.AuthorizationResult
-	authorizeErr    error
-	tokenResponse   oidcdomain.TokenResponse
-	tokenErr        error
-	lastTokenRequest oidcdomain.TokenRequest
+	discovery         oidcdomain.DiscoveryDocument
+	jwks              oidcdomain.JWKSet
+	authorizeResult   oidcdomain.AuthorizationResult
+	authorizeErr      error
+	tokenResponse     oidcdomain.TokenResponse
+	tokenErr          error
+	userInfo          oidcdomain.UserInfo
+	userInfoErr       error
+	revokeErr         error
+	logoutResult      oidcdomain.LogoutResult
+	logoutErr         error
+	lastTokenRequest  oidcdomain.TokenRequest
+	lastRevokeRequest oidcdomain.RevocationRequest
+	lastLogoutRequest oidcdomain.LogoutRequest
 }
 
 func (s *stubOIDCService) DiscoveryDocument() oidcdomain.DiscoveryDocument {
@@ -170,4 +259,18 @@ func (s *stubOIDCService) Authorize(ctx context.Context, input oidcdomain.Author
 func (s *stubOIDCService) ExchangeCode(ctx context.Context, input oidcdomain.TokenRequest) (oidcdomain.TokenResponse, error) {
 	s.lastTokenRequest = input
 	return s.tokenResponse, s.tokenErr
+}
+
+func (s *stubOIDCService) UserInfo(ctx context.Context, rawAccessToken string) (oidcdomain.UserInfo, error) {
+	return s.userInfo, s.userInfoErr
+}
+
+func (s *stubOIDCService) Revoke(ctx context.Context, input oidcdomain.RevocationRequest) error {
+	s.lastRevokeRequest = input
+	return s.revokeErr
+}
+
+func (s *stubOIDCService) Logout(ctx context.Context, rawSID string, input oidcdomain.LogoutRequest) (oidcdomain.LogoutResult, error) {
+	s.lastLogoutRequest = input
+	return s.logoutResult, s.logoutErr
 }

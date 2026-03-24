@@ -20,4 +20,16 @@ type AuthorizationCodeRepository interface {
 
 type RefreshTokenRepository interface {
 	CreateRefreshToken(ctx context.Context, token oidcdomain.RefreshToken) (oidcdomain.RefreshToken, error)
+	GetRefreshTokenByHashForUpdate(ctx context.Context, tokenHash string) (oidcdomain.RefreshToken, error)
+	RotateRefreshToken(ctx context.Context, id uuid.UUID, replacedByID uuid.UUID, changedAt time.Time) error
+	MarkRefreshTokenReplay(ctx context.Context, id uuid.UUID, detectedAt time.Time) error
+	RevokeRefreshTokenByHash(ctx context.Context, tokenHash string, revokedAt time.Time) error
+	RevokeRefreshTokensBySessionID(ctx context.Context, sessionID uuid.UUID, revokedAt time.Time) error
+}
+
+type AccessTokenRepository interface {
+	CreateAccessToken(ctx context.Context, token oidcdomain.AccessToken) (oidcdomain.AccessToken, error)
+	GetAccessTokenByHash(ctx context.Context, tokenHash string) (oidcdomain.AccessToken, error)
+	RevokeAccessTokenByHash(ctx context.Context, tokenHash string, revokedAt time.Time) error
+	RevokeAccessTokensBySessionID(ctx context.Context, sessionID uuid.UUID, revokedAt time.Time) error
 }

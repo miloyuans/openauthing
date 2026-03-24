@@ -70,6 +70,10 @@ docs
 - `GET /.well-known/jwks.json`
 - `GET /oauth2/authorize`
 - `POST /oauth2/token`
+- `GET /oauth2/userinfo`
+- `POST /oauth2/revoke`
+- `GET /oauth2/logout`
+- `POST /oauth2/logout`
 
 本任务新增 CRUD：
 
@@ -214,6 +218,40 @@ curl -X POST http://localhost:8080/oauth2/token \
 - `token_type`
 - `expires_in`
 - `scope`
+
+用 access token 调 `userinfo`：
+
+```bash
+curl http://localhost:8080/oauth2/userinfo \
+  -H "Authorization: Bearer REPLACE_ACCESS_TOKEN"
+```
+
+用 refresh token 刷新：
+
+```bash
+curl -X POST http://localhost:8080/oauth2/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=refresh_token&client_id=openauthing-demo-public&refresh_token=REPLACE_REFRESH_TOKEN"
+```
+
+说明：refresh token 会执行 rotation。刷新成功后会返回新的 `refresh_token`，旧 token 再次使用会被判定为重放并撤销该中心 session 关联的 OIDC token。
+
+撤销 token：
+
+```bash
+curl -X POST http://localhost:8080/oauth2/revoke \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "client_id=openauthing-demo-public&token=REPLACE_REFRESH_TOKEN&token_type_hint=refresh_token"
+```
+
+OIDC logout：
+
+```bash
+curl -i -X GET -c cookies.txt -b cookies.txt \
+  "http://localhost:8080/oauth2/logout?client_id=openauthing-demo-public&post_logout_redirect_uri=http%3A%2F%2Flocalhost%3A5173%2Fcallback"
+```
+
+说明：`/oauth2/logout` 会同时销毁中心 session、清理浏览器中的 `openauthing_session` cookie，并撤销当前中心 session 关联的 OIDC access token / refresh token。
 
 ### 创建用户
 
@@ -398,6 +436,8 @@ Repo 层支持事务上下文。当前通过 `store.WithinTx(ctx, fn)` 将 `sql.
 - [`000007_oidc_discovery_baseline.down.sql`](./migrations/000007_oidc_discovery_baseline.down.sql)
 - [`000008_oidc_code_flow.up.sql`](./migrations/000008_oidc_code_flow.up.sql)
 - [`000008_oidc_code_flow.down.sql`](./migrations/000008_oidc_code_flow.down.sql)
+- [`000009_oidc_runtime_tokens.up.sql`](./migrations/000009_oidc_runtime_tokens.up.sql)
+- [`000009_oidc_runtime_tokens.down.sql`](./migrations/000009_oidc_runtime_tokens.down.sql)
 
 执行：
 
@@ -468,9 +508,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify_migrations.ps1
 
 ## 当前限制
 
-- 当前中心 session 仍以数据库 + HttpOnly cookie 为主；OIDC access token / id token 已签发 JWT，但协议级单点登出还未实现
-- 当前已实现 OIDC Discovery、JWKS 和 Authorization Code + PKCE 主链路，但 `userinfo`、动态 client 注册、consent 页面和 refresh token grant 还未实现
+- 当前中心 session 仍以数据库 + HttpOnly cookie 为主；OIDC access token / id token 已签发 JWT，并已支持 `userinfo`、`revoke`、`logout` 和 refresh token rotation，但协议级前后端联动单点登出还未实现
+- 当前已实现 OIDC Discovery、JWKS、Authorization Code + PKCE、refresh token grant、token revoke 和 RP 发起的基础 logout，但动态 client 注册、consent 页面、`id_token_hint` 校验和更完整的 session family 风险处置还未实现
 - groups / roles / apps 暂时只实现列表和创建，未实现按 id 查询和更新
 - 当前登录接口按全局 `username` 或 `email` 查找；如果多租户下出现重复标识，会拒绝登录并在服务端记录审计日志
 - `/readyz` 仍然只检查关键配置是否存在，不做真实数据库连通性探测
-- TODO：后续任务再补 OIDC userinfo / refresh token grant、SAML / CAS 的授权流程、会话映射、单点登出和 Redis 会话缓存
+- TODO：后续任务再补 OIDC `userinfo` 扩展 claims、`id_token_hint` / front-channel logout、SAML / CAS 的授权流程、会话映射和 Redis 会话缓存

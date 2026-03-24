@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	ResponseTypeCode         = "code"
+	ResponseTypeCode           = "code"
 	GrantTypeAuthorizationCode = "authorization_code"
 	GrantTypeRefreshToken      = "refresh_token"
 
@@ -17,6 +17,9 @@ const (
 	TokenEndpointAuthMethodClientSecretPost  = "client_secret_post"
 
 	CodeChallengeMethodS256 = "S256"
+
+	TokenTypeHintAccessToken  = "access_token"
+	TokenTypeHintRefreshToken = "refresh_token"
 )
 
 type Client struct {
@@ -85,8 +88,26 @@ type AuthorizationCode struct {
 }
 
 type RefreshToken struct {
+	ID              uuid.UUID  `json:"id"`
+	OIDCClientID    uuid.UUID  `json:"oidc_client_id"`
+	ClientID        string     `json:"client_id"`
+	TenantID        uuid.UUID  `json:"tenant_id"`
+	UserID          uuid.UUID  `json:"user_id"`
+	SessionID       uuid.UUID  `json:"session_id"`
+	TokenHash       string     `json:"-"`
+	Scopes          []string   `json:"scopes"`
+	ExpiresAt       time.Time  `json:"expires_at"`
+	CreatedAt       time.Time  `json:"created_at"`
+	RevokedAt       *time.Time `json:"revoked_at,omitempty"`
+	RotatedAt       *time.Time `json:"rotated_at,omitempty"`
+	ReplacedByID    *uuid.UUID `json:"replaced_by_id,omitempty"`
+	ReuseDetectedAt *time.Time `json:"reuse_detected_at,omitempty"`
+}
+
+type AccessToken struct {
 	ID           uuid.UUID  `json:"id"`
 	OIDCClientID uuid.UUID  `json:"oidc_client_id"`
+	ClientID     string     `json:"client_id"`
 	TenantID     uuid.UUID  `json:"tenant_id"`
 	UserID       uuid.UUID  `json:"user_id"`
 	SessionID    uuid.UUID  `json:"session_id"`
@@ -100,6 +121,7 @@ type RefreshToken struct {
 type TokenRequest struct {
 	GrantType        string
 	Code             string
+	RefreshToken     string
 	RedirectURI      string
 	ClientID         string
 	ClientSecret     string
@@ -114,6 +136,34 @@ type TokenResponse struct {
 	RefreshToken string `json:"refresh_token,omitempty"`
 	IDToken      string `json:"id_token"`
 	Scope        string `json:"scope,omitempty"`
+}
+
+type UserInfo struct {
+	Sub               string   `json:"sub"`
+	PreferredUsername string   `json:"preferred_username"`
+	Email             string   `json:"email,omitempty"`
+	Name              string   `json:"name"`
+	Groups            []string `json:"groups"`
+	Roles             []string `json:"roles"`
+	SID               string   `json:"sid"`
+}
+
+type RevocationRequest struct {
+	Token            string
+	TokenTypeHint    string
+	ClientID         string
+	ClientSecret     string
+	ClientAuthMethod string
+}
+
+type LogoutRequest struct {
+	ClientID              string
+	PostLogoutRedirectURI string
+}
+
+type LogoutResult struct {
+	LoggedOut   bool
+	RedirectURI string
 }
 
 type ProtocolError struct {

@@ -84,6 +84,9 @@ BEGIN
     IF to_regclass('public.oidc_refresh_tokens') IS NULL THEN
         RAISE EXCEPTION 'missing table: oidc_refresh_tokens';
     END IF;
+    IF to_regclass('public.oidc_access_tokens') IS NULL THEN
+        RAISE EXCEPTION 'missing table: oidc_access_tokens';
+    END IF;
 END $$;
 
 DO $$
@@ -268,10 +271,17 @@ BEGIN
     );
 
     INSERT INTO oidc_refresh_tokens (
-        oidc_client_id, tenant_id, user_id, session_id, token_hash, scopes, expires_at
+        oidc_client_id, client_id, tenant_id, user_id, session_id, token_hash, scopes, expires_at
     ) VALUES (
-        oidc_client_one, tenant_one, user_one, session_one, repeat('c', 64),
+        oidc_client_one, 'verify-public-client', tenant_one, user_one, session_one, repeat('c', 64),
         ARRAY['openid', 'profile'], NOW() + INTERVAL '1 day'
+    );
+
+    INSERT INTO oidc_access_tokens (
+        oidc_client_id, client_id, tenant_id, user_id, session_id, token_hash, scopes, expires_at
+    ) VALUES (
+        oidc_client_one, 'verify-public-client', tenant_one, user_one, session_one, repeat('d', 64),
+        ARRAY['openid', 'profile'], NOW() + INTERVAL '10 minutes'
     );
 
     BEGIN
@@ -301,6 +311,9 @@ BEGIN
     END IF;
     IF to_regclass('public.oidc_refresh_tokens') IS NOT NULL THEN
         RAISE EXCEPTION 'oidc_refresh_tokens table should have been dropped';
+    END IF;
+    IF to_regclass('public.oidc_access_tokens') IS NOT NULL THEN
+        RAISE EXCEPTION 'oidc_access_tokens table should have been dropped';
     END IF;
     IF to_regclass('public.oidc_authorization_codes') IS NOT NULL THEN
         RAISE EXCEPTION 'oidc_authorization_codes table should have been dropped';

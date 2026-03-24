@@ -92,7 +92,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Server, error) {
 	oidcRepo := oidcrepo.NewPostgresRepository(store)
 	loginLimiter := authratelimit.NewMemoryLimiter(5, time.Minute)
 	authSvc := authservice.NewService(userRepo, sessionRepo, authpassword.NewArgon2ID(), loginLimiter, store, cfg.Session.Secret, logger)
-	oidcSvc := oidcservice.NewService(cfg.OIDC, oidcKeyManager, oidcRepo, oidcRepo, oidcRepo, userRepo, authSvc, store, cfg.Session.Secret, logger)
+	oidcSvc := oidcservice.NewService(cfg.OIDC, oidcKeyManager, oidcRepo, oidcRepo, oidcRepo, oidcRepo, userRepo, authSvc, store, cfg.Session.Secret, logger)
 	oidcHandler := oidchandler.NewHandler(oidcSvc, authhandler.DefaultCookieName)
 	oidcHandler.Register(router)
 	authHandler := authhandler.NewHandler(

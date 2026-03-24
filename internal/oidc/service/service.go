@@ -35,6 +35,7 @@ const (
 	oauthErrorInvalidClient        = "invalid_client"
 	oauthErrorInvalidGrant         = "invalid_grant"
 	oauthErrorInvalidScope         = "invalid_scope"
+	oauthErrorInvalidToken         = "invalid_token"
 	oauthErrorUnauthorizedClient   = "unauthorized_client"
 	oauthErrorUnsupportedGrantType = "unsupported_grant_type"
 	oauthErrorUnsupportedResponse  = "unsupported_response_type"
@@ -43,10 +44,13 @@ const (
 
 type UserRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (userdomain.User, error)
+	ListGroupCodes(ctx context.Context, userID uuid.UUID) ([]string, error)
+	ListRoleCodes(ctx context.Context, userID uuid.UUID) ([]string, error)
 }
 
-type SessionAuthenticator interface {
+type SessionManager interface {
 	Authenticate(ctx context.Context, sid string) (authdomain.Session, error)
+	LogoutCurrent(ctx context.Context, session authdomain.Session) error
 }
 
 type PasswordVerifier interface {
@@ -72,8 +76,9 @@ type Service struct {
 	clients            oidcrepo.ClientRepository
 	authorizationCodes oidcrepo.AuthorizationCodeRepository
 	refreshTokens      oidcrepo.RefreshTokenRepository
+	accessTokens       oidcrepo.AccessTokenRepository
 	users              UserRepository
-	sessions           SessionAuthenticator
+	sessions           SessionManager
 	passwords          PasswordVerifier
 	tokenValues        TokenValueManager
 	tokenSigner        TokenSigner
@@ -85,6 +90,11 @@ type Service struct {
 }
 
 type defaultTokenValueManager struct{}
+
+type issuedTokens struct {
+	Response       oidcdomain.TokenResponse
+	RefreshTokenID uuid.UUID
+}
 
 func (defaultTokenValueManager) Generate() (string, error) {
 	return tokenvalue.Generate()
@@ -100,8 +110,9 @@ func NewService(
 	clients oidcrepo.ClientRepository,
 	authorizationCodes oidcrepo.AuthorizationCodeRepository,
 	refreshTokens oidcrepo.RefreshTokenRepository,
+	accessTokens oidcrepo.AccessTokenRepository,
 	users UserRepository,
-	sessions SessionAuthenticator,
+	sessions SessionManager,
 	txManager TxManager,
 	credentialSecret string,
 	logger *slog.Logger,
@@ -121,6 +132,7 @@ func NewService(
 		clients:            clients,
 		authorizationCodes: authorizationCodes,
 		refreshTokens:      refreshTokens,
+		accessTokens:       accessTokens,
 		users:              users,
 		sessions:           sessions,
 		passwords:          authpassword.NewArgon2ID(),
@@ -140,6 +152,8 @@ func (s *Service) DiscoveryDocument() oidcdomain.DiscoveryDocument {
 		AuthorizationEndpoint:            s.endpoint("/oauth2/authorize"),
 		TokenEndpoint:                    s.endpoint("/oauth2/token"),
 		UserinfoEndpoint:                 s.endpoint("/oauth2/userinfo"),
+		RevocationEndpoint:               s.endpoint("/oauth2/revoke"),
+		EndSessionEndpoint:               s.endpoint("/oauth2/logout"),
 		JWKSURI:                          s.endpoint("/.well-known/jwks.json"),
 		ResponseTypesSupported:           []string{oidcdomain.ResponseTypeCode},
 		SubjectTypesSupported:            []string{"public"},
@@ -157,8 +171,13 @@ func (s *Service) DiscoveryDocument() oidcdomain.DiscoveryDocument {
 			"preferred_username",
 			"email",
 			"email_verified",
+			"groups",
+			"roles",
 		},
-		GrantTypesSupported:               []string{oidcdomain.GrantTypeAuthorizationCode, oidcdomain.GrantTypeRefreshToken},
+		GrantTypesSupported: []string{
+			oidcdomain.GrantTypeAuthorizationCode,
+			oidcdomain.GrantTypeRefreshToken,
+		},
 		TokenEndpointAuthMethodsSupported: []string{
 			oidcdomain.TokenEndpointAuthMethodClientSecretBasic,
 			oidcdomain.TokenEndpointAuthMethodClientSecretPost,
@@ -186,8 +205,8 @@ func (s *Service) Authorize(ctx context.Context, input oidcdomain.AuthorizationR
 	input.CodeChallengeMethod = strings.TrimSpace(input.CodeChallengeMethod)
 	input.Nonce = strings.TrimSpace(input.Nonce)
 
-	if strings.TrimSpace(s.credentialSecret) == "" {
-		return oidcdomain.AuthorizationResult{}, fmt.Errorf("oidc credential secret is required")
+	if err := s.ensureCredentialSecret(); err != nil {
+		return oidcdomain.AuthorizationResult{}, err
 	}
 
 	client, err := s.clients.GetByClientID(ctx, input.ClientID)
@@ -287,25 +306,177 @@ func (s *Service) Authorize(ctx context.Context, input oidcdomain.AuthorizationR
 func (s *Service) ExchangeCode(ctx context.Context, input oidcdomain.TokenRequest) (oidcdomain.TokenResponse, error) {
 	input.GrantType = strings.TrimSpace(input.GrantType)
 	input.Code = strings.TrimSpace(input.Code)
+	input.RefreshToken = strings.TrimSpace(input.RefreshToken)
 	input.RedirectURI = strings.TrimSpace(input.RedirectURI)
 	input.ClientID = strings.TrimSpace(input.ClientID)
 	input.ClientSecret = strings.TrimSpace(input.ClientSecret)
 	input.ClientAuthMethod = strings.TrimSpace(input.ClientAuthMethod)
 	input.CodeVerifier = strings.TrimSpace(input.CodeVerifier)
 
-	if input.GrantType != oidcdomain.GrantTypeAuthorizationCode {
-		return oidcdomain.TokenResponse{}, newProtocolError(http.StatusBadRequest, oauthErrorUnsupportedGrantType, "only grant_type=authorization_code is supported", "", "")
+	if err := s.ensureCredentialSecret(); err != nil {
+		return oidcdomain.TokenResponse{}, err
 	}
 
-	if strings.TrimSpace(s.credentialSecret) == "" {
-		return oidcdomain.TokenResponse{}, fmt.Errorf("oidc credential secret is required")
+	switch input.GrantType {
+	case oidcdomain.GrantTypeAuthorizationCode:
+		return s.exchangeAuthorizationCode(ctx, input)
+	case oidcdomain.GrantTypeRefreshToken:
+		return s.exchangeRefreshToken(ctx, input)
+	default:
+		return oidcdomain.TokenResponse{}, newProtocolError(http.StatusBadRequest, oauthErrorUnsupportedGrantType, "unsupported grant_type", "", "")
+	}
+}
+
+func (s *Service) UserInfo(ctx context.Context, rawAccessToken string) (oidcdomain.UserInfo, error) {
+	rawAccessToken = strings.TrimSpace(rawAccessToken)
+	if rawAccessToken == "" {
+		return oidcdomain.UserInfo{}, newProtocolError(http.StatusUnauthorized, oauthErrorInvalidToken, "access token is required", "", "")
 	}
 
-	client, err := s.clients.GetByClientID(ctx, input.ClientID)
+	tokenHash, err := s.tokenValues.Hash(s.credentialSecret, rawAccessToken)
+	if err != nil {
+		return oidcdomain.UserInfo{}, fmt.Errorf("hash access token: %w", err)
+	}
+
+	accessToken, err := s.accessTokens.GetAccessTokenByHash(ctx, tokenHash)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return oidcdomain.TokenResponse{}, newProtocolError(http.StatusUnauthorized, oauthErrorInvalidClient, "client authentication failed", "", "")
+			return oidcdomain.UserInfo{}, newProtocolError(http.StatusUnauthorized, oauthErrorInvalidToken, "access token is invalid", "", "")
 		}
+		return oidcdomain.UserInfo{}, err
+	}
+
+	now := s.now().UTC()
+	if accessToken.RevokedAt != nil || !now.Before(accessToken.ExpiresAt) {
+		return oidcdomain.UserInfo{}, newProtocolError(http.StatusUnauthorized, oauthErrorInvalidToken, "access token is invalid", "", "")
+	}
+
+	user, err := s.loadActiveUser(ctx, accessToken.UserID, accessToken.TenantID)
+	if err != nil {
+		if isProtocolErrorCode(err, oauthErrorInvalidGrant) {
+			return oidcdomain.UserInfo{}, newProtocolError(http.StatusUnauthorized, oauthErrorInvalidToken, "access token subject is invalid", "", "")
+		}
+		return oidcdomain.UserInfo{}, err
+	}
+
+	groups, err := s.users.ListGroupCodes(ctx, user.ID)
+	if err != nil {
+		return oidcdomain.UserInfo{}, err
+	}
+	roles, err := s.users.ListRoleCodes(ctx, user.ID)
+	if err != nil {
+		return oidcdomain.UserInfo{}, err
+	}
+
+	return oidcdomain.UserInfo{
+		Sub:               user.ID.String(),
+		PreferredUsername: user.Username,
+		Email:             user.Email,
+		Name:              user.DisplayName,
+		Groups:            sliceOrEmpty(groups),
+		Roles:             sliceOrEmpty(roles),
+		SID:               accessToken.SessionID.String(),
+	}, nil
+}
+
+func (s *Service) Revoke(ctx context.Context, input oidcdomain.RevocationRequest) error {
+	input.Token = strings.TrimSpace(input.Token)
+	input.TokenTypeHint = strings.TrimSpace(input.TokenTypeHint)
+	input.ClientID = strings.TrimSpace(input.ClientID)
+	input.ClientSecret = strings.TrimSpace(input.ClientSecret)
+	input.ClientAuthMethod = strings.TrimSpace(input.ClientAuthMethod)
+
+	if input.Token == "" {
+		return newProtocolError(http.StatusBadRequest, oauthErrorInvalidRequest, "token is required", "", "")
+	}
+
+	client, err := s.lookupClient(ctx, input.ClientID)
+	if err != nil {
+		return err
+	}
+	if err := s.authenticateClient(client, input.ClientAuthMethod, input.ClientSecret); err != nil {
+		return err
+	}
+
+	tokenHash, err := s.tokenValues.Hash(s.credentialSecret, input.Token)
+	if err != nil {
+		return fmt.Errorf("hash revoke token: %w", err)
+	}
+
+	now := s.now().UTC()
+	switch input.TokenTypeHint {
+	case oidcdomain.TokenTypeHintAccessToken:
+		return s.revokeAccessToken(ctx, client, tokenHash, now)
+	case oidcdomain.TokenTypeHintRefreshToken:
+		return s.revokeRefreshToken(ctx, client, tokenHash, now)
+	default:
+		if err := s.revokeAccessToken(ctx, client, tokenHash, now); err != nil {
+			return err
+		}
+		return s.revokeRefreshToken(ctx, client, tokenHash, now)
+	}
+}
+
+func (s *Service) Logout(ctx context.Context, rawSID string, input oidcdomain.LogoutRequest) (oidcdomain.LogoutResult, error) {
+	input.ClientID = strings.TrimSpace(input.ClientID)
+	input.PostLogoutRedirectURI = strings.TrimSpace(input.PostLogoutRedirectURI)
+
+	result := oidcdomain.LogoutResult{LoggedOut: true}
+	if input.PostLogoutRedirectURI != "" && input.ClientID == "" {
+		return oidcdomain.LogoutResult{}, newProtocolError(http.StatusBadRequest, oauthErrorInvalidRequest, "client_id is required when post_logout_redirect_uri is used", "", "")
+	}
+
+	if input.ClientID != "" {
+		client, err := s.lookupClient(ctx, input.ClientID)
+		if err != nil {
+			return oidcdomain.LogoutResult{}, err
+		}
+		if input.PostLogoutRedirectURI != "" {
+			if !containsString(client.PostLogoutRedirectURIs, input.PostLogoutRedirectURI) {
+				return oidcdomain.LogoutResult{}, newProtocolError(http.StatusBadRequest, oauthErrorInvalidRequest, "post_logout_redirect_uri is invalid", "", "")
+			}
+			result.RedirectURI = input.PostLogoutRedirectURI
+		}
+	}
+
+	rawSID = strings.TrimSpace(rawSID)
+	if rawSID == "" {
+		return result, nil
+	}
+
+	session, err := s.sessions.Authenticate(ctx, rawSID)
+	if err != nil {
+		s.logger.Info("oidc logout without active session",
+			"request_id", requestid.FromContext(ctx),
+			"client_id", input.ClientID,
+			"error", err,
+		)
+		return result, nil
+	}
+
+	now := s.now().UTC()
+	if err := s.withinTx(ctx, func(txCtx context.Context) error {
+		if err := s.sessions.LogoutCurrent(txCtx, session); err != nil {
+			return err
+		}
+		return s.revokeSessionTokens(txCtx, session.ID, now)
+	}); err != nil {
+		return oidcdomain.LogoutResult{}, err
+	}
+
+	s.logger.Info("oidc logout",
+		"request_id", requestid.FromContext(ctx),
+		"user_id", session.UserID.String(),
+		"session_id", session.ID.String(),
+		"client_id", input.ClientID,
+	)
+
+	return result, nil
+}
+
+func (s *Service) exchangeAuthorizationCode(ctx context.Context, input oidcdomain.TokenRequest) (oidcdomain.TokenResponse, error) {
+	client, err := s.lookupClient(ctx, input.ClientID)
+	if err != nil {
 		return oidcdomain.TokenResponse{}, err
 	}
 
@@ -349,81 +520,14 @@ func (s *Service) ExchangeCode(ctx context.Context, input oidcdomain.TokenReques
 			return newProtocolError(http.StatusBadRequest, oauthErrorInvalidGrant, err.Error(), "", "")
 		}
 
-		user, userErr := s.users.GetByID(txCtx, code.UserID)
+		user, userErr := s.loadActiveUser(txCtx, code.UserID, client.TenantID)
 		if userErr != nil {
-			if errors.Is(userErr, store.ErrNotFound) {
-				return newProtocolError(http.StatusBadRequest, oauthErrorInvalidGrant, "authorization subject is no longer available", "", "")
-			}
 			return userErr
 		}
-		if user.Status != "active" {
-			return newProtocolError(http.StatusBadRequest, oauthErrorInvalidGrant, "authorization subject is not active", "", "")
-		}
-		if user.TenantID != client.TenantID {
-			return newProtocolError(http.StatusBadRequest, oauthErrorInvalidGrant, "authorization subject tenant does not match the client", "", "")
-		}
 
-		accessToken, signErr := s.signToken(map[string]any{
-			"iss":                s.issuer,
-			"sub":                user.ID.String(),
-			"aud":                client.ClientID,
-			"exp":                now.Add(time.Duration(client.AccessTokenTTLSeconds) * time.Second).Unix(),
-			"iat":                now.Unix(),
-			"jti":                now.Format(time.RFC3339Nano) + ":" + user.ID.String(),
-			"sid":                code.SessionID.String(),
-			"scope":              strings.Join(code.Scopes, " "),
-			"preferred_username": user.Username,
-			"email":              user.Email,
-			"name":               user.DisplayName,
-			"token_use":          "access_token",
-		})
-		if signErr != nil {
-			return signErr
-		}
-
-		idTokenClaims := map[string]any{
-			"iss":                s.issuer,
-			"sub":                user.ID.String(),
-			"aud":                client.ClientID,
-			"exp":                now.Add(time.Duration(client.AccessTokenTTLSeconds) * time.Second).Unix(),
-			"iat":                now.Unix(),
-			"sid":                code.SessionID.String(),
-			"preferred_username": user.Username,
-			"email":              user.Email,
-			"name":               user.DisplayName,
-		}
-		if code.Nonce != "" {
-			idTokenClaims["nonce"] = code.Nonce
-		}
-
-		idToken, signErr := s.signToken(idTokenClaims)
-		if signErr != nil {
-			return signErr
-		}
-
-		var refreshRaw string
-		if containsString(client.GrantTypes, oidcdomain.GrantTypeRefreshToken) && client.RefreshTokenTTLSeconds > 0 {
-			refreshRaw, signErr = s.tokenValues.Generate()
-			if signErr != nil {
-				return fmt.Errorf("generate refresh token: %w", signErr)
-			}
-
-			refreshHash, hashErr := s.tokenValues.Hash(s.credentialSecret, refreshRaw)
-			if hashErr != nil {
-				return fmt.Errorf("hash refresh token: %w", hashErr)
-			}
-
-			if _, createErr := s.refreshTokens.CreateRefreshToken(txCtx, oidcdomain.RefreshToken{
-				OIDCClientID: client.ID,
-				TenantID:     client.TenantID,
-				UserID:       user.ID,
-				SessionID:    code.SessionID,
-				TokenHash:    refreshHash,
-				Scopes:       code.Scopes,
-				ExpiresAt:    now.Add(time.Duration(client.RefreshTokenTTLSeconds) * time.Second),
-			}); createErr != nil {
-				return createErr
-			}
+		issued, issueErr := s.issueTokens(txCtx, client, user, code.SessionID, code.Scopes, code.Nonce)
+		if issueErr != nil {
+			return issueErr
 		}
 
 		if consumeErr := s.authorizationCodes.Consume(txCtx, code.ID, now); consumeErr != nil {
@@ -433,15 +537,7 @@ func (s *Service) ExchangeCode(ctx context.Context, input oidcdomain.TokenReques
 			return consumeErr
 		}
 
-		response = oidcdomain.TokenResponse{
-			AccessToken:  accessToken,
-			TokenType:    defaultTokenType,
-			ExpiresIn:    client.AccessTokenTTLSeconds,
-			RefreshToken: refreshRaw,
-			IDToken:      idToken,
-			Scope:        strings.Join(code.Scopes, " "),
-		}
-
+		response = issued.Response
 		return nil
 	}); err != nil {
 		return oidcdomain.TokenResponse{}, err
@@ -450,10 +546,316 @@ func (s *Service) ExchangeCode(ctx context.Context, input oidcdomain.TokenReques
 	s.logger.Info("oidc token issued",
 		"request_id", requestid.FromContext(ctx),
 		"client_id", client.ClientID,
+		"grant_type", oidcdomain.GrantTypeAuthorizationCode,
 		"expires_in", response.ExpiresIn,
 	)
 
 	return response, nil
+}
+
+func (s *Service) exchangeRefreshToken(ctx context.Context, input oidcdomain.TokenRequest) (oidcdomain.TokenResponse, error) {
+	client, err := s.lookupClient(ctx, input.ClientID)
+	if err != nil {
+		return oidcdomain.TokenResponse{}, err
+	}
+
+	if !containsString(client.GrantTypes, oidcdomain.GrantTypeRefreshToken) {
+		return oidcdomain.TokenResponse{}, newProtocolError(http.StatusBadRequest, oauthErrorUnauthorizedClient, "client does not allow refresh_token grant", "", "")
+	}
+
+	if err := s.authenticateClient(client, input.ClientAuthMethod, input.ClientSecret); err != nil {
+		return oidcdomain.TokenResponse{}, err
+	}
+
+	if input.RefreshToken == "" {
+		return oidcdomain.TokenResponse{}, newProtocolError(http.StatusBadRequest, oauthErrorInvalidRequest, "refresh_token is required", "", "")
+	}
+
+	tokenHash, err := s.tokenValues.Hash(s.credentialSecret, input.RefreshToken)
+	if err != nil {
+		return oidcdomain.TokenResponse{}, fmt.Errorf("hash refresh token: %w", err)
+	}
+
+	now := s.now().UTC()
+	var response oidcdomain.TokenResponse
+	if err := s.withinTx(ctx, func(txCtx context.Context) error {
+		refreshToken, lookupErr := s.refreshTokens.GetRefreshTokenByHashForUpdate(txCtx, tokenHash)
+		if lookupErr != nil {
+			if errors.Is(lookupErr, store.ErrNotFound) {
+				return newProtocolError(http.StatusBadRequest, oauthErrorInvalidGrant, "refresh token is invalid", "", "")
+			}
+			return lookupErr
+		}
+
+		if refreshToken.OIDCClientID != client.ID || refreshToken.ClientID != client.ClientID {
+			return newProtocolError(http.StatusBadRequest, oauthErrorInvalidGrant, "refresh token is invalid", "", "")
+		}
+		if !now.Before(refreshToken.ExpiresAt) {
+			return newProtocolError(http.StatusBadRequest, oauthErrorInvalidGrant, "refresh token has expired", "", "")
+		}
+		if refreshToken.RevokedAt != nil {
+			if refreshToken.ReplacedByID != nil {
+				if markErr := s.refreshTokens.MarkRefreshTokenReplay(txCtx, refreshToken.ID, now); markErr != nil && !errors.Is(markErr, store.ErrNotFound) {
+					return markErr
+				}
+				if revokeErr := s.revokeSessionTokens(txCtx, refreshToken.SessionID, now); revokeErr != nil {
+					return revokeErr
+				}
+				s.logger.Warn("oidc refresh token replay detected",
+					"request_id", requestid.FromContext(ctx),
+					"client_id", client.ClientID,
+					"user_id", refreshToken.UserID.String(),
+					"session_id", refreshToken.SessionID.String(),
+				)
+			}
+			return newProtocolError(http.StatusBadRequest, oauthErrorInvalidGrant, "refresh token is invalid", "", "")
+		}
+
+		user, userErr := s.loadActiveUser(txCtx, refreshToken.UserID, client.TenantID)
+		if userErr != nil {
+			return userErr
+		}
+
+		issued, issueErr := s.issueTokens(txCtx, client, user, refreshToken.SessionID, refreshToken.Scopes, "")
+		if issueErr != nil {
+			return issueErr
+		}
+		if issued.RefreshTokenID == uuid.Nil {
+			return fmt.Errorf("refresh token rotation requires refresh token issuance")
+		}
+
+		if rotateErr := s.refreshTokens.RotateRefreshToken(txCtx, refreshToken.ID, issued.RefreshTokenID, now); rotateErr != nil {
+			if errors.Is(rotateErr, store.ErrNotFound) {
+				return newProtocolError(http.StatusBadRequest, oauthErrorInvalidGrant, "refresh token is invalid", "", "")
+			}
+			return rotateErr
+		}
+
+		response = issued.Response
+		return nil
+	}); err != nil {
+		return oidcdomain.TokenResponse{}, err
+	}
+
+	s.logger.Info("oidc token issued",
+		"request_id", requestid.FromContext(ctx),
+		"client_id", client.ClientID,
+		"grant_type", oidcdomain.GrantTypeRefreshToken,
+		"expires_in", response.ExpiresIn,
+	)
+
+	return response, nil
+}
+
+func (s *Service) issueTokens(
+	ctx context.Context,
+	client oidcdomain.Client,
+	user userdomain.User,
+	sessionID uuid.UUID,
+	scopes []string,
+	nonce string,
+) (issuedTokens, error) {
+	now := s.now().UTC()
+	accessTokenExpiresAt := now.Add(time.Duration(client.AccessTokenTTLSeconds) * time.Second)
+
+	accessToken, err := s.signToken(map[string]any{
+		"iss":                s.issuer,
+		"sub":                user.ID.String(),
+		"aud":                client.ClientID,
+		"exp":                accessTokenExpiresAt.Unix(),
+		"iat":                now.Unix(),
+		"jti":                uuid.NewString(),
+		"sid":                sessionID.String(),
+		"scope":              strings.Join(scopes, " "),
+		"preferred_username": user.Username,
+		"email":              user.Email,
+		"name":               user.DisplayName,
+		"token_use":          "access_token",
+	})
+	if err != nil {
+		return issuedTokens{}, err
+	}
+
+	accessTokenHash, err := s.tokenValues.Hash(s.credentialSecret, accessToken)
+	if err != nil {
+		return issuedTokens{}, fmt.Errorf("hash access token: %w", err)
+	}
+
+	if _, err := s.accessTokens.CreateAccessToken(ctx, oidcdomain.AccessToken{
+		OIDCClientID: client.ID,
+		ClientID:     client.ClientID,
+		TenantID:     client.TenantID,
+		UserID:       user.ID,
+		SessionID:    sessionID,
+		TokenHash:    accessTokenHash,
+		Scopes:       scopes,
+		ExpiresAt:    accessTokenExpiresAt,
+	}); err != nil {
+		return issuedTokens{}, err
+	}
+
+	idTokenClaims := map[string]any{
+		"iss":                s.issuer,
+		"sub":                user.ID.String(),
+		"aud":                client.ClientID,
+		"exp":                accessTokenExpiresAt.Unix(),
+		"iat":                now.Unix(),
+		"sid":                sessionID.String(),
+		"preferred_username": user.Username,
+		"email":              user.Email,
+		"name":               user.DisplayName,
+	}
+	if nonce != "" {
+		idTokenClaims["nonce"] = nonce
+	}
+
+	idToken, err := s.signToken(idTokenClaims)
+	if err != nil {
+		return issuedTokens{}, err
+	}
+
+	result := issuedTokens{
+		Response: oidcdomain.TokenResponse{
+			AccessToken: accessToken,
+			TokenType:   defaultTokenType,
+			ExpiresIn:   client.AccessTokenTTLSeconds,
+			IDToken:     idToken,
+			Scope:       strings.Join(scopes, " "),
+		},
+	}
+
+	if containsString(client.GrantTypes, oidcdomain.GrantTypeRefreshToken) && client.RefreshTokenTTLSeconds > 0 {
+		rawRefreshToken, err := s.tokenValues.Generate()
+		if err != nil {
+			return issuedTokens{}, fmt.Errorf("generate refresh token: %w", err)
+		}
+
+		refreshTokenHash, err := s.tokenValues.Hash(s.credentialSecret, rawRefreshToken)
+		if err != nil {
+			return issuedTokens{}, fmt.Errorf("hash refresh token: %w", err)
+		}
+
+		createdRefreshToken, err := s.refreshTokens.CreateRefreshToken(ctx, oidcdomain.RefreshToken{
+			OIDCClientID: client.ID,
+			ClientID:     client.ClientID,
+			TenantID:     client.TenantID,
+			UserID:       user.ID,
+			SessionID:    sessionID,
+			TokenHash:    refreshTokenHash,
+			Scopes:       scopes,
+			ExpiresAt:    now.Add(time.Duration(client.RefreshTokenTTLSeconds) * time.Second),
+		})
+		if err != nil {
+			return issuedTokens{}, err
+		}
+
+		result.Response.RefreshToken = rawRefreshToken
+		result.RefreshTokenID = createdRefreshToken.ID
+	}
+
+	return result, nil
+}
+
+func (s *Service) loadActiveUser(ctx context.Context, userID, tenantID uuid.UUID) (userdomain.User, error) {
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return userdomain.User{}, newProtocolError(http.StatusBadRequest, oauthErrorInvalidGrant, "authorization subject is no longer available", "", "")
+		}
+		return userdomain.User{}, err
+	}
+	if user.Status != "active" {
+		return userdomain.User{}, newProtocolError(http.StatusBadRequest, oauthErrorInvalidGrant, "authorization subject is not active", "", "")
+	}
+	if user.TenantID != tenantID {
+		return userdomain.User{}, newProtocolError(http.StatusBadRequest, oauthErrorInvalidGrant, "authorization subject tenant does not match the client", "", "")
+	}
+
+	return user, nil
+}
+
+func (s *Service) revokeAccessToken(ctx context.Context, client oidcdomain.Client, tokenHash string, revokedAt time.Time) error {
+	accessToken, err := s.accessTokens.GetAccessTokenByHash(ctx, tokenHash)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if accessToken.ClientID != client.ClientID {
+		return nil
+	}
+
+	if err := s.accessTokens.RevokeAccessTokenByHash(ctx, tokenHash, revokedAt); err != nil {
+		return err
+	}
+
+	s.logger.Info("oidc token revoked",
+		"request_id", requestid.FromContext(ctx),
+		"client_id", client.ClientID,
+		"token_type", oidcdomain.TokenTypeHintAccessToken,
+		"user_id", accessToken.UserID.String(),
+		"session_id", accessToken.SessionID.String(),
+	)
+
+	return nil
+}
+
+func (s *Service) revokeRefreshToken(ctx context.Context, client oidcdomain.Client, tokenHash string, revokedAt time.Time) error {
+	return s.withinTx(ctx, func(txCtx context.Context) error {
+		refreshToken, err := s.refreshTokens.GetRefreshTokenByHashForUpdate(txCtx, tokenHash)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+		if refreshToken.ClientID != client.ClientID {
+			return nil
+		}
+
+		if err := s.refreshTokens.RevokeRefreshTokenByHash(txCtx, tokenHash, revokedAt); err != nil {
+			return err
+		}
+
+		s.logger.Info("oidc token revoked",
+			"request_id", requestid.FromContext(ctx),
+			"client_id", client.ClientID,
+			"token_type", oidcdomain.TokenTypeHintRefreshToken,
+			"user_id", refreshToken.UserID.String(),
+			"session_id", refreshToken.SessionID.String(),
+		)
+
+		return nil
+	})
+}
+
+func (s *Service) revokeSessionTokens(ctx context.Context, sessionID uuid.UUID, revokedAt time.Time) error {
+	if err := s.accessTokens.RevokeAccessTokensBySessionID(ctx, sessionID, revokedAt); err != nil {
+		return err
+	}
+	if err := s.refreshTokens.RevokeRefreshTokensBySessionID(ctx, sessionID, revokedAt); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *Service) lookupClient(ctx context.Context, clientID string) (oidcdomain.Client, error) {
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return oidcdomain.Client{}, newProtocolError(http.StatusUnauthorized, oauthErrorInvalidClient, "client authentication failed", "", "")
+	}
+
+	client, err := s.clients.GetByClientID(ctx, clientID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return oidcdomain.Client{}, newProtocolError(http.StatusUnauthorized, oauthErrorInvalidClient, "client authentication failed", "", "")
+		}
+		return oidcdomain.Client{}, err
+	}
+
+	return client, nil
 }
 
 func (s *Service) endpoint(path string) string {
@@ -594,6 +996,14 @@ func (s *Service) withinTx(ctx context.Context, fn func(ctx context.Context) err
 	return s.txManager.WithinTx(ctx, fn)
 }
 
+func (s *Service) ensureCredentialSecret() error {
+	if strings.TrimSpace(s.credentialSecret) == "" {
+		return fmt.Errorf("oidc credential secret is required")
+	}
+
+	return nil
+}
+
 func containsString(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
@@ -602,6 +1012,14 @@ func containsString(values []string, target string) bool {
 	}
 
 	return false
+}
+
+func sliceOrEmpty(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+
+	return values
 }
 
 func validateAbsoluteURL(raw string) error {
@@ -627,4 +1045,9 @@ func newProtocolError(status int, code, description, redirectURI, state string) 
 		RedirectURI: redirectURI,
 		State:       state,
 	}
+}
+
+func isProtocolErrorCode(err error, code string) bool {
+	var protocolErr oidcdomain.ProtocolError
+	return errors.As(err, &protocolErr) && protocolErr.Code == code
 }

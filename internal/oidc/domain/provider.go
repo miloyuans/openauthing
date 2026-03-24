@@ -5,6 +5,8 @@ type DiscoveryDocument struct {
 	AuthorizationEndpoint                 string   `json:"authorization_endpoint"`
 	TokenEndpoint                         string   `json:"token_endpoint"`
 	UserinfoEndpoint                      string   `json:"userinfo_endpoint"`
+	RevocationEndpoint                    string   `json:"revocation_endpoint,omitempty"`
+	EndSessionEndpoint                    string   `json:"end_session_endpoint,omitempty"`
 	JWKSURI                               string   `json:"jwks_uri"`
 	ResponseTypesSupported                []string `json:"response_types_supported"`
 	SubjectTypesSupported                 []string `json:"subject_types_supported"`
