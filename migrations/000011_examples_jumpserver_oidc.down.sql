@@ -1,0 +1,1 @@
+-- no schema change for JumpServer OIDC example assets

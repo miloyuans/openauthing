@@ -1,0 +1,28 @@
+# JumpServer OpenID example config for openauthing
+# Adjust BASE_SITE_URL and provider endpoints to match your actual hostnames.
+
+AUTH_OPENID=True
+BASE_SITE_URL=http://localhost:8082/
+AUTH_OPENID_CLIENT_ID=jumpserver-local
+AUTH_OPENID_CLIENT_SECRET=jumpserver-local-secret
+AUTH_OPENID_PROVIDER_ENDPOINT=http://host.docker.internal:8080
+AUTH_OPENID_PROVIDER_AUTHORIZATION_ENDPOINT=http://host.docker.internal:8080/oauth2/authorize
+AUTH_OPENID_PROVIDER_TOKEN_ENDPOINT=http://host.docker.internal:8080/oauth2/token
+AUTH_OPENID_PROVIDER_JWKS_ENDPOINT=http://host.docker.internal:8080/.well-known/jwks.json
+AUTH_OPENID_PROVIDER_USERINFO_ENDPOINT=http://host.docker.internal:8080/oauth2/userinfo
+AUTH_OPENID_PROVIDER_END_SESSION_ENDPOINT=http://host.docker.internal:8080/oauth2/logout
+AUTH_OPENID_PROVIDER_SIGNATURE_ALG=RS256
+AUTH_OPENID_PROVIDER_SIGNATURE_KEY=null
+AUTH_OPENID_SCOPES=openid profile email offline_access
+AUTH_OPENID_ID_TOKEN_MAX_AGE=300
+AUTH_OPENID_ID_TOKEN_INCLUDE_CLAIMS=True
+AUTH_OPENID_USE_STATE=True
+AUTH_OPENID_USE_NONCE=True
+AUTH_OPENID_SHARE_SESSION=True
+AUTH_OPENID_IGNORE_SSL_VERIFICATION=True
+
+# Derived URLs for this example:
+# issuer=http://host.docker.internal:8080
+# login=http://localhost:8082/core/auth/openid/login/
+# callback=http://localhost:8082/core/auth/openid/callback/
+# logout=http://localhost:8082/core/auth/openid/logout/
