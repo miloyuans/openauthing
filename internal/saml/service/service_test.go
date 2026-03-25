@@ -31,7 +31,10 @@ func TestIDPMetadataIncludesRequiredElements(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
+		nil,
 		stubCertificateManager{metadataCertificate: "BASE64CERT"},
+		nil,
 		"test-secret",
 		nil,
 	)
@@ -64,7 +67,7 @@ func TestImportMetadataParsesAndStoresServiceProvider(t *testing.T) {
 		},
 	}
 	repo := newStubServiceProviderRepository()
-	svc := NewService(config.SAMLConfig{}, "https://iam.example.test", appRepo, nil, repo, stubCertificateManager{metadataCertificate: "BASE64CERT"}, "test-secret", nil)
+	svc := NewService(config.SAMLConfig{}, "https://iam.example.test", appRepo, nil, repo, nil, nil, stubCertificateManager{metadataCertificate: "BASE64CERT"}, nil, "test-secret", nil)
 
 	result, err := svc.ImportMetadata(context.Background(), appID.String(), sampleSPMetadataXML)
 	if err != nil {
@@ -106,7 +109,7 @@ func TestGetByAppIDReturnsStoredConfiguration(t *testing.T) {
 		NameIDFormat: samldomain.DefaultNameIDFormat,
 	}
 
-	svc := NewService(config.SAMLConfig{}, "https://iam.example.test", appRepo, nil, repo, stubCertificateManager{metadataCertificate: "BASE64CERT"}, "test-secret", nil)
+	svc := NewService(config.SAMLConfig{}, "https://iam.example.test", appRepo, nil, repo, nil, nil, stubCertificateManager{metadataCertificate: "BASE64CERT"}, nil, "test-secret", nil)
 	result, err := svc.GetByAppID(context.Background(), appID.String())
 	if err != nil {
 		t.Fatalf("get service provider: %v", err)
@@ -152,7 +155,8 @@ func TestCompleteSPInitiatedReturnsSignedAssertion(t *testing.T) {
 	}
 
 	keyManager := newTestKeyManager(t)
-	svc := NewService(config.SAMLConfig{}, "https://iam.example.test", appRepo, userRepo, repo, keyManager, "test-session-secret", nil)
+	loginSessionRepo := newStubLoginSessionRepository()
+	svc := NewService(config.SAMLConfig{}, "https://iam.example.test", appRepo, userRepo, repo, loginSessionRepo, nil, keyManager, nil, "test-session-secret", nil)
 	svc.now = func() time.Time { return time.Date(2026, 3, 25, 10, 0, 0, 0, time.UTC) }
 
 	result, err := svc.CompleteSPInitiated(context.Background(), authdomain.Session{
@@ -189,6 +193,18 @@ func TestCompleteSPInitiatedReturnsSignedAssertion(t *testing.T) {
 
 	assertion := mustFindElement(t, responseXML, "saml:Assertion")
 	validateSignature(t, assertion, keyManager.Certificate())
+
+	if len(loginSessionRepo.items) != 1 {
+		t.Fatalf("expected one saml login session binding, got %d", len(loginSessionRepo.items))
+	}
+	for _, item := range loginSessionRepo.items {
+		if item.SessionIndex != item.SessionID.String() {
+			t.Fatalf("expected session_index to match center session id, got %#v", item)
+		}
+		if item.NameID == "" {
+			t.Fatalf("expected persisted name_id, got %#v", item)
+		}
+	}
 }
 
 func TestCompleteIDPInitiatedReturnsTargetACS(t *testing.T) {
@@ -205,6 +221,7 @@ func TestCompleteIDPInitiatedReturnsTargetACS(t *testing.T) {
 	}
 	userRepo := stubUserRepository{user: authTestUser(userID, tenantID)}
 	repo := newStubServiceProviderRepository()
+	loginSessionRepo := newStubLoginSessionRepository()
 	repo.items[appID] = samldomain.ServiceProvider{
 		AppID:                appID,
 		EntityID:             "https://sp.example.test/metadata",
@@ -213,7 +230,7 @@ func TestCompleteIDPInitiatedReturnsTargetACS(t *testing.T) {
 		WantAssertionsSigned: true,
 	}
 
-	svc := NewService(config.SAMLConfig{}, "https://iam.example.test", appRepo, userRepo, repo, newTestKeyManager(t), "test-session-secret", nil)
+	svc := NewService(config.SAMLConfig{}, "https://iam.example.test", appRepo, userRepo, repo, loginSessionRepo, nil, newTestKeyManager(t), nil, "test-session-secret", nil)
 	result, err := svc.CompleteIDPInitiated(context.Background(), authdomain.Session{
 		ID:        uuid.New(),
 		TenantID:  tenantID,
@@ -248,6 +265,7 @@ func TestCompleteSPInitiatedCanSignResponse(t *testing.T) {
 	}
 	userRepo := stubUserRepository{user: authTestUser(userID, tenantID)}
 	repo := newStubServiceProviderRepository()
+	loginSessionRepo := newStubLoginSessionRepository()
 	repo.items[appID] = samldomain.ServiceProvider{
 		AppID:                appID,
 		EntityID:             "https://sp.example.test/metadata",
@@ -257,7 +275,7 @@ func TestCompleteSPInitiatedCanSignResponse(t *testing.T) {
 		WantResponseSigned:   true,
 	}
 
-	svc := NewService(config.SAMLConfig{}, "https://iam.example.test", appRepo, userRepo, repo, newTestKeyManager(t), "test-session-secret", nil)
+	svc := NewService(config.SAMLConfig{}, "https://iam.example.test", appRepo, userRepo, repo, loginSessionRepo, nil, newTestKeyManager(t), nil, "test-session-secret", nil)
 	result, err := svc.CompleteSPInitiated(context.Background(), authdomain.Session{
 		ID:        uuid.New(),
 		TenantID:  tenantID,
@@ -277,6 +295,101 @@ func TestCompleteSPInitiatedCanSignResponse(t *testing.T) {
 	}
 }
 
+func TestHandleLogoutRequestInvalidatesBoundSessionsAndCenterSession(t *testing.T) {
+	appID := uuid.New()
+	userID := uuid.New()
+	sessionID := uuid.New()
+	repo := newStubServiceProviderRepository()
+	repo.items[appID] = samldomain.ServiceProvider{
+		AppID:    appID,
+		EntityID: "https://sp.example.test/metadata",
+		SLOURL:   "https://sp.example.test/saml/slo",
+	}
+
+	loginSessionRepo := newStubLoginSessionRepository()
+	loginSessionRepo.items[uuid.New()] = samldomain.LoginSession{
+		ID:           uuid.New(),
+		AppID:        appID,
+		UserID:       userID,
+		SessionID:    sessionID,
+		NameID:       "alice@example.com",
+		SessionIndex: sessionID.String(),
+		Status:       samldomain.LoginSessionStatusActive,
+		IssuedAt:     time.Date(2026, 3, 25, 10, 0, 0, 0, time.UTC),
+		ExpiresAt:    time.Date(2026, 3, 26, 10, 0, 0, 0, time.UTC),
+	}
+	centerSessions := &stubCenterSessionRepository{}
+
+	svc := NewService(config.SAMLConfig{}, "https://iam.example.test", nil, nil, repo, loginSessionRepo, centerSessions, newTestKeyManager(t), nil, "test-session-secret", nil)
+	svc.now = func() time.Time { return time.Date(2026, 3, 25, 11, 0, 0, 0, time.UTC) }
+
+	result, err := svc.HandleLogoutRequest(context.Background(), samldomain.LogoutRequest{
+		Binding:     samldomain.BindingHTTPRedirect,
+		SAMLRequest: mustDeflatedAuthnRequest(t, sampleLogoutRequestXML("https://iam.example.test/saml/idp/slo", sessionID.String(), "alice@example.com")),
+		RelayState:  "relay-logout",
+	})
+	if err != nil {
+		t.Fatalf("handle logout request: %v", err)
+	}
+
+	if result.SLOURL != "https://sp.example.test/saml/slo" {
+		t.Fatalf("unexpected slo url: %#v", result)
+	}
+	if result.RelayState != "relay-logout" {
+		t.Fatalf("unexpected relay state: %q", result.RelayState)
+	}
+
+	if len(centerSessions.loggedOut) != 1 || centerSessions.loggedOut[0] != sessionID {
+		t.Fatalf("expected center session logout for %s, got %#v", sessionID, centerSessions.loggedOut)
+	}
+
+	logoutResponseXML := mustDecodeSAMLResponse(t, result.SAMLResponse)
+	if !strings.Contains(logoutResponseXML, "LogoutResponse") || !strings.Contains(logoutResponseXML, `InResponseTo="_logout123"`) {
+		t.Fatalf("expected logout response payload, got %s", logoutResponseXML)
+	}
+
+	for _, item := range loginSessionRepo.items {
+		if item.SessionID == sessionID && item.Status != samldomain.LoginSessionStatusLoggedOut {
+			t.Fatalf("expected bound saml session to be invalidated, got %#v", item)
+		}
+	}
+}
+
+func TestHandleLogoutRequestCanFindSessionByNameID(t *testing.T) {
+	appID := uuid.New()
+	sessionID := uuid.New()
+	repo := newStubServiceProviderRepository()
+	repo.items[appID] = samldomain.ServiceProvider{
+		AppID:    appID,
+		EntityID: "https://sp.example.test/metadata",
+		SLOURL:   "https://sp.example.test/saml/slo",
+	}
+
+	loginSessionRepo := newStubLoginSessionRepository()
+	loginSessionRepo.items[uuid.New()] = samldomain.LoginSession{
+		ID:           uuid.New(),
+		AppID:        appID,
+		UserID:       uuid.New(),
+		SessionID:    sessionID,
+		NameID:       "alice@example.com",
+		SessionIndex: sessionID.String(),
+		Status:       samldomain.LoginSessionStatusActive,
+		IssuedAt:     time.Date(2026, 3, 25, 10, 0, 0, 0, time.UTC),
+		ExpiresAt:    time.Date(2026, 3, 26, 10, 0, 0, 0, time.UTC),
+	}
+
+	svc := NewService(config.SAMLConfig{}, "https://iam.example.test", nil, nil, repo, loginSessionRepo, &stubCenterSessionRepository{}, newTestKeyManager(t), nil, "test-session-secret", nil)
+	svc.now = func() time.Time { return time.Date(2026, 3, 25, 11, 0, 0, 0, time.UTC) }
+
+	_, err := svc.HandleLogoutRequest(context.Background(), samldomain.LogoutRequest{
+		Binding:     samldomain.BindingHTTPRedirect,
+		SAMLRequest: mustDeflatedAuthnRequest(t, sampleLogoutRequestWithoutSessionIndexXML("https://iam.example.test/saml/idp/slo", "alice@example.com")),
+	})
+	if err != nil {
+		t.Fatalf("handle logout request by name_id: %v", err)
+	}
+}
+
 func TestCompleteSPInitiatedRejectsDestinationMismatch(t *testing.T) {
 	appID := uuid.New()
 	tenantID := uuid.New()
@@ -289,6 +402,7 @@ func TestCompleteSPInitiatedRejectsDestinationMismatch(t *testing.T) {
 		},
 	}
 	repo := newStubServiceProviderRepository()
+	loginSessionRepo := newStubLoginSessionRepository()
 	repo.items[appID] = samldomain.ServiceProvider{
 		AppID:                appID,
 		EntityID:             "https://sp.example.test/metadata",
@@ -296,7 +410,7 @@ func TestCompleteSPInitiatedRejectsDestinationMismatch(t *testing.T) {
 		WantAssertionsSigned: true,
 	}
 
-	svc := NewService(config.SAMLConfig{}, "https://iam.example.test", appRepo, stubUserRepository{}, repo, newTestKeyManager(t), "test-session-secret", nil)
+	svc := NewService(config.SAMLConfig{}, "https://iam.example.test", appRepo, stubUserRepository{}, repo, loginSessionRepo, nil, newTestKeyManager(t), nil, "test-session-secret", nil)
 	_, err := svc.CompleteSPInitiated(context.Background(), authdomain.Session{
 		ID:        uuid.New(),
 		TenantID:  tenantID,
@@ -377,6 +491,81 @@ func (s *stubServiceProviderRepository) GetByEntityID(ctx context.Context, entit
 func (s *stubServiceProviderRepository) Upsert(ctx context.Context, sp samldomain.ServiceProvider) (samldomain.ServiceProvider, error) {
 	s.items[sp.AppID] = sp
 	return sp, nil
+}
+
+type stubLoginSessionRepository struct {
+	items map[uuid.UUID]samldomain.LoginSession
+}
+
+func newStubLoginSessionRepository() *stubLoginSessionRepository {
+	return &stubLoginSessionRepository{items: map[uuid.UUID]samldomain.LoginSession{}}
+}
+
+func (s *stubLoginSessionRepository) Upsert(ctx context.Context, session samldomain.LoginSession) (samldomain.LoginSession, error) {
+	for id, item := range s.items {
+		if item.AppID == session.AppID && item.SessionID == session.SessionID {
+			session.ID = id
+			session.CreatedAt = item.CreatedAt
+			session.UpdatedAt = session.IssuedAt
+			session.LogoutAt = nil
+			s.items[id] = session
+			return session, nil
+		}
+	}
+
+	if session.ID == uuid.Nil {
+		session.ID = uuid.New()
+	}
+	if session.CreatedAt.IsZero() {
+		session.CreatedAt = session.IssuedAt
+	}
+	session.UpdatedAt = session.IssuedAt
+	s.items[session.ID] = session
+	return session, nil
+}
+
+func (s *stubLoginSessionRepository) GetActiveByAppAndSessionIndex(ctx context.Context, appID uuid.UUID, sessionIndex string) (samldomain.LoginSession, error) {
+	for _, item := range s.items {
+		if item.AppID == appID && item.SessionIndex == sessionIndex && item.Status == samldomain.LoginSessionStatusActive {
+			return item, nil
+		}
+	}
+	return samldomain.LoginSession{}, store.ErrNotFound
+}
+
+func (s *stubLoginSessionRepository) GetActiveByAppAndNameID(ctx context.Context, appID uuid.UUID, nameID string) (samldomain.LoginSession, error) {
+	for _, item := range s.items {
+		if item.AppID == appID && item.NameID == nameID && item.Status == samldomain.LoginSessionStatusActive {
+			return item, nil
+		}
+	}
+	return samldomain.LoginSession{}, store.ErrNotFound
+}
+
+func (s *stubLoginSessionRepository) InvalidateBySessionID(ctx context.Context, sessionID uuid.UUID, logoutAt time.Time) error {
+	found := false
+	for id, item := range s.items {
+		if item.SessionID == sessionID && item.Status == samldomain.LoginSessionStatusActive {
+			item.Status = samldomain.LoginSessionStatusLoggedOut
+			item.LogoutAt = &logoutAt
+			item.UpdatedAt = logoutAt
+			s.items[id] = item
+			found = true
+		}
+	}
+	if !found {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+type stubCenterSessionRepository struct {
+	loggedOut []uuid.UUID
+}
+
+func (s *stubCenterSessionRepository) Logout(ctx context.Context, id uuid.UUID, logoutAt time.Time) error {
+	s.loggedOut = append(s.loggedOut, id)
+	return nil
 }
 
 type stubCertificateManager struct {
@@ -499,6 +688,23 @@ func sampleAuthnRequestXML(destination string) string {
   <saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">https://sp.example.test/metadata</saml:Issuer>
   <samlp:NameIDPolicy Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent" AllowCreate="true"/>
 </samlp:AuthnRequest>`
+}
+
+func sampleLogoutRequestXML(destination, sessionIndex, nameID string) string {
+	return `<?xml version="1.0"?>
+<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="_logout123" Version="2.0" IssueInstant="2026-03-25T11:00:00Z" Destination="` + destination + `">
+  <saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">https://sp.example.test/metadata</saml:Issuer>
+  <saml:NameID xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">` + nameID + `</saml:NameID>
+  <samlp:SessionIndex>` + sessionIndex + `</samlp:SessionIndex>
+</samlp:LogoutRequest>`
+}
+
+func sampleLogoutRequestWithoutSessionIndexXML(destination, nameID string) string {
+	return `<?xml version="1.0"?>
+<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="_logout123" Version="2.0" IssueInstant="2026-03-25T11:00:00Z" Destination="` + destination + `">
+  <saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">https://sp.example.test/metadata</saml:Issuer>
+  <saml:NameID xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">` + nameID + `</saml:NameID>
+</samlp:LogoutRequest>`
 }
 
 const sampleSPMetadataXML = `<?xml version="1.0"?>

@@ -129,8 +129,18 @@ func (s *Service) issueLoginResult(
 		return samldomain.LoginResult{}, err
 	}
 
+	nameIDFormat := normalizedNameIDFormat(sp.NameIDFormat)
+	nameIDValue, err := s.nameIDValue(user, sp.EntityID, nameIDFormat)
+	if err != nil {
+		return samldomain.LoginResult{}, err
+	}
+
 	responseXML, err := s.buildSignedResponse(ctx, session, user, sp, inResponseTo)
 	if err != nil {
+		return samldomain.LoginResult{}, err
+	}
+
+	if err := s.bindLoginSession(ctx, app.ID, user.ID, session.ID, nameIDValue, session.ID.String(), session.ExpiresAt.UTC()); err != nil {
 		return samldomain.LoginResult{}, err
 	}
 
@@ -150,6 +160,25 @@ func (s *Service) issueLoginResult(
 		AppID:        app.ID.String(),
 		EntityID:     sp.EntityID,
 	}, nil
+}
+
+func (s *Service) bindLoginSession(ctx context.Context, appID, userID, sessionID uuid.UUID, nameID, sessionIndex string, expiresAt time.Time) error {
+	if s.loginSessions == nil {
+		return samldomain.ProtocolError{Status: http.StatusInternalServerError, Message: "saml login session repository is not configured"}
+	}
+
+	now := s.now().UTC()
+	_, err := s.loginSessions.Upsert(ctx, samldomain.LoginSession{
+		AppID:        appID,
+		UserID:       userID,
+		SessionID:    sessionID,
+		NameID:       strings.TrimSpace(nameID),
+		SessionIndex: strings.TrimSpace(sessionIndex),
+		Status:       samldomain.LoginSessionStatusActive,
+		IssuedAt:     now,
+		ExpiresAt:    expiresAt,
+	})
+	return err
 }
 
 func (s *Service) buildSignedResponse(

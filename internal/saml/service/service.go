@@ -36,6 +36,25 @@ type ServiceProviderRepository interface {
 	Upsert(ctx context.Context, sp samldomain.ServiceProvider) (samldomain.ServiceProvider, error)
 }
 
+type LoginSessionRepository interface {
+	Upsert(ctx context.Context, session samldomain.LoginSession) (samldomain.LoginSession, error)
+	GetActiveByAppAndSessionIndex(ctx context.Context, appID uuid.UUID, sessionIndex string) (samldomain.LoginSession, error)
+	GetActiveByAppAndNameID(ctx context.Context, appID uuid.UUID, nameID string) (samldomain.LoginSession, error)
+	InvalidateBySessionID(ctx context.Context, sessionID uuid.UUID, logoutAt time.Time) error
+}
+
+type CenterSessionRepository interface {
+	Logout(ctx context.Context, id uuid.UUID, logoutAt time.Time) error
+}
+
+type TxManager interface {
+	WithinTx(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
+type LogoutAdapter interface {
+	OnSessionLoggedOut(ctx context.Context, sessionID uuid.UUID) error
+}
+
 type CertificateManager interface {
 	MetadataCertificate() string
 	Certificate() *x509.Certificate
@@ -48,10 +67,20 @@ type Service struct {
 	apps          ApplicationRepository
 	users         UserRepository
 	repo          ServiceProviderRepository
+	loginSessions LoginSessionRepository
+	sessions      CenterSessionRepository
 	certs         CertificateManager
+	txManager     TxManager
+	logoutAdapter LogoutAdapter
 	sessionSecret string
 	logger        *slog.Logger
 	now           func() time.Time
+}
+
+type noopLogoutAdapter struct{}
+
+func (noopLogoutAdapter) OnSessionLoggedOut(ctx context.Context, sessionID uuid.UUID) error {
+	return nil
 }
 
 func NewService(
@@ -60,7 +89,10 @@ func NewService(
 	apps ApplicationRepository,
 	users UserRepository,
 	repo ServiceProviderRepository,
+	loginSessions LoginSessionRepository,
+	sessions CenterSessionRepository,
 	certs CertificateManager,
+	txManager TxManager,
 	sessionSecret string,
 	logger *slog.Logger,
 ) *Service {
@@ -74,7 +106,11 @@ func NewService(
 		apps:          apps,
 		users:         users,
 		repo:          repo,
+		loginSessions: loginSessions,
+		sessions:      sessions,
 		certs:         certs,
+		txManager:     txManager,
+		logoutAdapter: noopLogoutAdapter{},
 		sessionSecret: strings.TrimSpace(sessionSecret),
 		logger:        logger,
 		now:           time.Now,
@@ -273,6 +309,23 @@ func (s *Service) idpEntityID() string {
 
 func (s *Service) endpoint(path string) string {
 	return s.issuer + path
+}
+
+func (s *Service) withinTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	if s.txManager == nil {
+		return fn(ctx)
+	}
+
+	return s.txManager.WithinTx(ctx, fn)
+}
+
+func (s *Service) SetLogoutAdapter(adapter LogoutAdapter) {
+	if adapter == nil {
+		s.logoutAdapter = noopLogoutAdapter{}
+		return
+	}
+
+	s.logoutAdapter = adapter
 }
 
 func defaultServiceProvider(appID uuid.UUID) samldomain.ServiceProvider {

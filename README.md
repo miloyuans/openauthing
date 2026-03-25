@@ -81,6 +81,8 @@ docs
 - `GET /saml/idp/login`
 - `GET /saml/idp/sso`
 - `POST /saml/idp/sso`
+- `GET /saml/idp/slo`
+- `POST /saml/idp/slo`
 
 本任务新增 CRUD：
 
@@ -294,6 +296,34 @@ SP-Initiated SSO：
 - `persistent`
 - `emailAddress`
 - `unspecified`
+
+### SAML 2.0 Single Logout 基础联调
+
+当前版本的 SLO 目标是先打通最小可用链路：
+
+- 支持 SP 通过 `GET /saml/idp/slo` 或 `POST /saml/idp/slo` 发起 `LogoutRequest`
+- openauthing 会按 `session_index` 或 `name_id` 检索已建立的 `saml_login_sessions`
+- 匹配成功后会联动注销中心会话 `auth_sessions`
+- 同时把绑定的 SAML 登录态标记为 `logged_out`
+- 最后生成签名的 `LogoutResponse`，并通过自动提交的 HTML form 回传到已注册的 `slo_url`
+
+最小联调步骤：
+
+1. 先按上面的 SSO 步骤完成一次登录，让 openauthing 建立中心 session 和 `saml_login_sessions`
+2. 让 SP 发送 `LogoutRequest` 到 `/saml/idp/slo`
+3. openauthing 会清理当前浏览器里的 `openauthing_session` cookie
+4. openauthing 会返回一个自动提交到 SP `SingleLogoutService` 的 HTML 表单，表单中至少包含：
+   - `SAMLResponse`
+   - `RelayState`（如果请求里有）
+5. SLO 完成后，再访问 `/api/v1/auth/me` 应返回未登录
+
+说明：
+
+- 当前会把 SAML `SessionIndex` 绑定为中心会话 `auth_sessions.id`
+- 当前支持通过 `session_index` 或 `name_id` 查找 SAML 登录态
+- 当前只实现 SP 发起到 IdP 的基础 SLO 处理；如果用户直接调用 `/api/v1/auth/logout`，还不会反向通知已登录的 SAML SP
+- 当前为未来统一登出保留了协议适配接口，但还没有实现多协议 fan-out 登出编排
+- 当前没有实现 AuthnRequest / LogoutRequest 的签名校验，也没有实现完整的前后端多 SP 级联登出
 
 ### OIDC Authorization Code + PKCE 本地联调
 
@@ -591,6 +621,8 @@ Repo 层支持事务上下文。当前通过 `store.WithinTx(ctx, fn)` 将 `sql.
 - [`000012_saml_service_providers.down.sql`](./migrations/000012_saml_service_providers.down.sql)
 - [`000013_saml_sso_flow.up.sql`](./migrations/000013_saml_sso_flow.up.sql)
 - [`000013_saml_sso_flow.down.sql`](./migrations/000013_saml_sso_flow.down.sql)
+- [`000014_saml_login_sessions.up.sql`](./migrations/000014_saml_login_sessions.up.sql)
+- [`000014_saml_login_sessions.down.sql`](./migrations/000014_saml_login_sessions.down.sql)
 
 执行：
 
@@ -717,7 +749,7 @@ powershell -ExecutionPolicy Bypass -File .\examples\jumpserver-oidc\scripts\boot
 - auth login service 成功 / 失败 / 限流
 - auth login handler
 - auth session repo / middleware / me / logout / revoke
-- SAML IdP metadata 输出、SP metadata 导入、SP-Initiated / IdP-Initiated SSO 基础链路
+- SAML IdP metadata 输出、SP metadata 导入、SP-Initiated / IdP-Initiated SSO、SAML 登录态绑定和基础 SLO
 - Jenkins OIDC example 资产校验
 - JumpServer OIDC example 资产校验
 - migration 验证脚本检查核心表和唯一索引
@@ -738,7 +770,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify_migrations.ps1
 
 - 当前中心 session 仍以数据库 + HttpOnly cookie 为主；OIDC access token / id token 已签发 JWT，并已支持 `userinfo`、`revoke`、`logout` 和 refresh token rotation，但协议级前后端联动单点登出还未实现
 - 当前已实现 OIDC Discovery、JWKS、Authorization Code + PKCE、refresh token grant、token revoke 和 RP 发起的基础 logout，但动态 client 注册、consent 页面、`id_token_hint` 校验和更完整的 session family 风险处置还未实现
-- 当前 SAML 已实现 IdP metadata、SP metadata 导入、SP 配置管理、SP-Initiated / IdP-Initiated SSO 和 Assertion 签名，但还没有 Single Logout、加密 Assertion、AuthnRequest 签名校验和更细的属性策略
+- 当前 SAML 已实现 IdP metadata、SP metadata 导入、SP 配置管理、SP-Initiated / IdP-Initiated SSO、Assertion 签名和基础 Single Logout，但还没有 AuthnRequest / LogoutRequest 签名校验、中心 logout 反向 fan-out、完整多 SP 统一登出编排、加密 Assertion 和更细的属性策略
 - groups / roles / apps 暂时只实现列表和创建，未实现按 id 查询和更新
 - 当前登录接口按全局 `username` 或 `email` 查找；如果多租户下出现重复标识，会拒绝登录并在服务端记录审计日志
 - `/readyz` 仍然只检查关键配置是否存在，不做真实数据库连通性探测

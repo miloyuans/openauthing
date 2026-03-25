@@ -154,12 +154,42 @@ func TestLoginPageWithSessionReturnsAutoPostForm(t *testing.T) {
 	}
 }
 
+func TestSLOClearsCookieAndReturnsAutoPostForm(t *testing.T) {
+	router := chi.NewRouter()
+	service := stubService{
+		logoutResult: samldomain.LogoutResult{
+			SLOURL:       "https://sp.example.test/saml/slo",
+			SAMLResponse: "PHNhbWxwOkxvZ291dFJlc3BvbnNlLz4=",
+			RelayState:   "relay-logout",
+		},
+	}
+	NewHandler(service, "openauthing_session", nil).RegisterPublic(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/saml/idp/slo?SAMLRequest=abc123", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `action="https://sp.example.test/saml/slo"`) {
+		t.Fatalf("expected SLO form action, got %s", rec.Body.String())
+	}
+
+	cookies := rec.Result().Cookies()
+	if len(cookies) == 0 || cookies[0].Name != "openauthing_session" || cookies[0].MaxAge != -1 {
+		t.Fatalf("expected logout cookie clearing, got %#v", cookies)
+	}
+}
+
 type stubService struct {
 	item     samldomain.ServiceProvider
 	imported samldomain.ServiceProvider
 	metadata []byte
 	ssoResult samldomain.LoginResult
 	idpResult samldomain.LoginResult
+	logoutResult samldomain.LogoutResult
 }
 
 func (s stubService) GetByAppID(ctx context.Context, rawAppID string) (samldomain.ServiceProvider, error) {
@@ -184,6 +214,10 @@ func (s stubService) CompleteSPInitiated(ctx context.Context, session authdomain
 
 func (s stubService) CompleteIDPInitiated(ctx context.Context, session authdomain.Session, rawAppID, rawEntityID string) (samldomain.LoginResult, error) {
 	return s.idpResult, nil
+}
+
+func (s stubService) HandleLogoutRequest(ctx context.Context, input samldomain.LogoutRequest) (samldomain.LogoutResult, error) {
+	return s.logoutResult, nil
 }
 
 type stubAuthenticator struct {

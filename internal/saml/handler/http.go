@@ -19,6 +19,7 @@ type Service interface {
 	IDPMetadata() ([]byte, error)
 	CompleteSPInitiated(ctx context.Context, session authdomain.Session, input samldomain.SPInitiatedRequest) (samldomain.LoginResult, error)
 	CompleteIDPInitiated(ctx context.Context, session authdomain.Session, rawAppID, rawEntityID string) (samldomain.LoginResult, error)
+	HandleLogoutRequest(ctx context.Context, input samldomain.LogoutRequest) (samldomain.LogoutResult, error)
 }
 
 type SessionAuthenticator interface {
@@ -58,6 +59,8 @@ func (h *Handler) RegisterPublic(r chi.Router) {
 	r.Get("/saml/idp/login", h.handleLoginPage)
 	r.Get("/saml/idp/sso", h.handleSSO)
 	r.Post("/saml/idp/sso", h.handleSSO)
+	r.Get("/saml/idp/slo", h.handleSLO)
+	r.Post("/saml/idp/slo", h.handleSLO)
 }
 
 func (h *Handler) handleGetServiceProvider(w http.ResponseWriter, r *http.Request) {

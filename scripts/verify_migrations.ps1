@@ -90,6 +90,9 @@ BEGIN
     IF to_regclass('public.saml_service_providers') IS NULL THEN
         RAISE EXCEPTION 'missing table: saml_service_providers';
     END IF;
+    IF to_regclass('public.saml_login_sessions') IS NULL THEN
+        RAISE EXCEPTION 'missing table: saml_login_sessions';
+    END IF;
 END $$;
 
 DO $$
@@ -103,6 +106,7 @@ DECLARE
     permission_one UUID;
     oidc_client_one UUID;
     saml_app_one UUID;
+    saml_login_session_one UUID;
 BEGIN
     INSERT INTO tenants (name, slug, status)
     VALUES ('Tenant One', 'tenant-one', 'active')
@@ -313,6 +317,37 @@ BEGIN
         '{"email":"email"}'::jsonb
     );
 
+    INSERT INTO saml_login_sessions (
+        app_id, user_id, session_id, name_id, session_index, status, issued_at, expires_at
+    ) VALUES (
+        saml_app_one,
+        user_one,
+        session_one,
+        'alice@tenant-one.test',
+        session_one::text,
+        'active',
+        NOW(),
+        NOW() + INTERVAL '1 day'
+    ) RETURNING id INTO saml_login_session_one;
+
+    BEGIN
+        INSERT INTO saml_login_sessions (
+            app_id, user_id, session_id, name_id, session_index, status, issued_at, expires_at
+        ) VALUES (
+            saml_app_one,
+            user_one,
+            session_one,
+            'alice@tenant-one.test',
+            session_one::text,
+            'active',
+            NOW(),
+            NOW() + INTERVAL '1 day'
+        );
+        RAISE EXCEPTION 'expected unique violation on saml_login_sessions (app_id, session_id)';
+    EXCEPTION
+        WHEN unique_violation THEN NULL;
+    END;
+
     BEGIN
         INSERT INTO applications (
             tenant_id, name, code, type, status, homepage_url, icon_url, description
@@ -371,6 +406,9 @@ BEGIN
     END IF;
     IF to_regclass('public.saml_service_providers') IS NOT NULL THEN
         RAISE EXCEPTION 'saml_service_providers table should have been dropped';
+    END IF;
+    IF to_regclass('public.saml_login_sessions') IS NOT NULL THEN
+        RAISE EXCEPTION 'saml_login_sessions table should have been dropped';
     END IF;
     IF to_regclass('public.oidc_clients') IS NOT NULL THEN
         RAISE EXCEPTION 'oidc_clients table should have been dropped';
