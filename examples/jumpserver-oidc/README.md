@@ -17,8 +17,9 @@
 
 ## 先决条件
 
-- Docker Desktop
-- PowerShell 7 或 Windows PowerShell
+- Docker Engine 或 Docker Desktop
+- Linux shell
+- PowerShell 7 (`pwsh`)，如果你想直接运行示例里的辅助脚本
 - 一个可配置 OpenID 的 JumpServer 实例
 
 说明：
@@ -30,8 +31,8 @@
 
 在仓库根目录执行：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\examples\jumpserver-oidc\scripts\bootstrap.ps1
+```bash
+pwsh ./examples/jumpserver-oidc/scripts/bootstrap.ps1
 ```
 
 脚本会完成：
@@ -55,8 +56,8 @@ powershell -ExecutionPolicy Bypass -File .\examples\jumpserver-oidc\scripts\boot
 
 如果你的 JumpServer 地址不是 `http://localhost:8082/`，可以覆盖：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\examples\jumpserver-oidc\scripts\bootstrap.ps1 `
+```bash
+pwsh ./examples/jumpserver-oidc/scripts/bootstrap.ps1 \
   -JumpServerBaseURL "https://jump.example.test/"
 ```
 

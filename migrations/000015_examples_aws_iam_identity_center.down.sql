@@ -1,0 +1,1 @@
+-- no schema change for AWS IAM Identity Center example assets

@@ -13,15 +13,16 @@
 
 ## 先决条件
 
-- Docker Desktop
-- PowerShell 7 或 Windows PowerShell
+- Docker Engine 或 Docker Desktop
+- Linux shell
+- PowerShell 7 (`pwsh`)，如果你想直接运行示例里的辅助脚本
 
 ## 启动
 
 在仓库根目录执行：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\examples\jenkins-oidc\scripts\bootstrap.ps1
+```bash
+pwsh ./examples/jenkins-oidc/scripts/bootstrap.ps1
 ```
 
 脚本会完成：
