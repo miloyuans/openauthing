@@ -1,0 +1,1 @@
+-- no schema change to roll back for SAML SSO flow

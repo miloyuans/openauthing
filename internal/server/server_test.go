@@ -326,3 +326,35 @@ func TestSAMLIDPMetadataEndpoint(t *testing.T) {
 		}
 	}
 }
+
+func TestSAMLLoginPageEndpoint(t *testing.T) {
+	srv := newTestServer(t, config.Config{
+		App: config.AppConfig{Name: "openauthing", Env: "test"},
+		HTTP: config.HTTPConfig{
+			Addr:           ":0",
+			AllowedOrigins: []string{"http://localhost:5173"},
+		},
+		Postgres: config.PostgresConfig{DSN: "postgres://openauthing@localhost:5432/openauthing?sslmode=disable"},
+		Redis:    config.RedisConfig{Addr: "redis:6379"},
+		Log:      config.LogConfig{Level: "debug"},
+		Session:  config.SessionConfig{Secret: "test-session-secret"},
+		OIDC:     config.OIDCConfig{Issuer: "https://iam.example.test"},
+		SAML:     config.SAMLConfig{IDPEntityID: "https://iam.example.test/saml/idp/metadata"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/saml/idp/login?continue=%2Fsaml%2Fidp%2Fsso%3FSAMLRequest%3Dabc123", nil)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	if contentType := rec.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
+		t.Fatalf("unexpected content type: %q", contentType)
+	}
+
+	if !strings.Contains(rec.Body.String(), "Use your openauthing account") {
+		t.Fatalf("expected login page content, got %s", rec.Body.String())
+	}
+}

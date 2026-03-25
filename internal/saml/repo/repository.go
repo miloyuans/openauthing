@@ -9,5 +9,6 @@ import (
 
 type ServiceProviderRepository interface {
 	GetByAppID(ctx context.Context, appID uuid.UUID) (domain.ServiceProvider, error)
+	GetByEntityID(ctx context.Context, entityID string) (domain.ServiceProvider, error)
 	Upsert(ctx context.Context, sp domain.ServiceProvider) (domain.ServiceProvider, error)
 }

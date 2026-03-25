@@ -1,0 +1,1 @@
+-- no schema change for SAML SSO flow; this migration reserves the task boundary

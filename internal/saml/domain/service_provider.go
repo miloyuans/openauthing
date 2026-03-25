@@ -8,6 +8,8 @@ import (
 
 const (
 	DefaultNameIDFormat     = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
+	NameIDFormatPersistent  = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent"
+	NameIDFormatUnspecified = "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified"
 	BindingHTTPPost         = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
 	BindingHTTPRedirect     = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
 	ProtocolNamespaceSAML20 = "urn:oasis:names:tc:SAML:2.0:protocol"

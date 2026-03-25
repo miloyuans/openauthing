@@ -29,6 +29,17 @@ WHERE app_id = $1`, appID)
 	return scanServiceProvider(row)
 }
 
+func (r *PostgresServiceProviderRepository) GetByEntityID(ctx context.Context, entityID string) (domain.ServiceProvider, error) {
+	row := r.store.Executor(ctx).QueryRowContext(ctx, `
+SELECT app_id, entity_id, acs_url, slo_url, nameid_format, want_assertions_signed, want_response_signed,
+       sign_authn_request, encrypt_assertion, sp_metadata_xml, sp_x509_cert, attribute_mapping_jsonb,
+       created_at, updated_at
+FROM saml_service_providers
+WHERE entity_id = $1`, entityID)
+
+	return scanServiceProvider(row)
+}
+
 func (r *PostgresServiceProviderRepository) Upsert(ctx context.Context, sp domain.ServiceProvider) (domain.ServiceProvider, error) {
 	attributeMapping, err := marshalAttributeMapping(sp.AttributeMapping)
 	if err != nil {

@@ -78,6 +78,9 @@ docs
 - `GET /oauth2/logout`
 - `POST /oauth2/logout`
 - `GET /saml/idp/metadata`
+- `GET /saml/idp/login`
+- `GET /saml/idp/sso`
+- `POST /saml/idp/sso`
 
 本任务新增 CRUD：
 
@@ -208,6 +211,89 @@ curl -X POST http://localhost:8080/api/v1/apps/APP_ID/saml/import-metadata \
 - 会解析 `WantAssertionsSigned`、`AuthnRequestsSigned`
 - 会提取首个 `X509Certificate`
 - metadata 解析失败时会返回统一 JSON 错误，并把错误挂到 `metadata_xml` 字段
+
+### SAML 2.0 SP-Initiated / IdP-Initiated SSO 联调
+
+先准备一个 `type=saml-sp` 的应用，并写入 SAML SP 配置：
+
+```bash
+curl -X POST http://localhost:8080/api/v1/apps \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant_id": "11111111-1111-1111-1111-111111111111",
+    "name": "SAML Demo",
+    "code": "saml-demo",
+    "type": "saml-sp",
+    "status": "active",
+    "homepage_url": "https://sp.example.test",
+    "description": "SAML demo app"
+  }'
+```
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/apps/APP_ID/saml \
+  -H "Content-Type: application/json" \
+  -d '{
+    "entity_id": "https://sp.example.test/metadata",
+    "acs_url": "https://sp.example.test/saml/acs",
+    "slo_url": "https://sp.example.test/saml/slo",
+    "nameid_format": "persistent",
+    "want_assertions_signed": true,
+    "want_response_signed": false,
+    "sign_authn_request": false,
+    "encrypt_assertion": false,
+    "attribute_mapping": {
+      "username": "preferred_username",
+      "email": "email",
+      "name": "name",
+      "groups": "groups"
+    }
+  }'
+```
+
+使用本地账号先登录 openauthing，拿到中心 session cookie：
+
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/login \
+  -c cookies.txt -b cookies.txt \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "alice",
+    "password": "secret123"
+  }'
+```
+
+IdP-Initiated SSO：
+
+```bash
+curl -i -c cookies.txt -b cookies.txt \
+  "http://localhost:8080/saml/idp/login?app_id=APP_ID"
+```
+
+成功后会返回一个自动提交到 ACS 的 HTML 表单，表单里至少包含：
+
+- `SAMLResponse`
+- `RelayState`（如果有）
+
+SP-Initiated SSO：
+
+1. SP 把 `AuthnRequest` 以 HTTP-Redirect 或 HTTP-POST 发到 `/saml/idp/sso`
+2. 如果当前没有中心 session，openauthing 会先跳到 `/saml/idp/login`
+3. 本地登录成功后，浏览器会继续原始 SAML 请求
+4. openauthing 会签发带签名的 Assertion，并通过 HTTP-POST 回传到已注册的 ACS URL
+
+当前 Assertion 默认会带这些属性：
+
+- `username`
+- `email`
+- `name`
+- `groups`
+
+属性名可通过 `attribute_mapping` 覆盖。NameID 当前支持：
+
+- `persistent`
+- `emailAddress`
+- `unspecified`
 
 ### OIDC Authorization Code + PKCE 本地联调
 
@@ -503,6 +589,8 @@ Repo 层支持事务上下文。当前通过 `store.WithinTx(ctx, fn)` 将 `sql.
 - [`000011_examples_jumpserver_oidc.down.sql`](./migrations/000011_examples_jumpserver_oidc.down.sql)
 - [`000012_saml_service_providers.up.sql`](./migrations/000012_saml_service_providers.up.sql)
 - [`000012_saml_service_providers.down.sql`](./migrations/000012_saml_service_providers.down.sql)
+- [`000013_saml_sso_flow.up.sql`](./migrations/000013_saml_sso_flow.up.sql)
+- [`000013_saml_sso_flow.down.sql`](./migrations/000013_saml_sso_flow.down.sql)
 
 执行：
 
@@ -629,7 +717,7 @@ powershell -ExecutionPolicy Bypass -File .\examples\jumpserver-oidc\scripts\boot
 - auth login service 成功 / 失败 / 限流
 - auth login handler
 - auth session repo / middleware / me / logout / revoke
-- SAML IdP metadata 输出与 SP metadata 导入
+- SAML IdP metadata 输出、SP metadata 导入、SP-Initiated / IdP-Initiated SSO 基础链路
 - Jenkins OIDC example 资产校验
 - JumpServer OIDC example 资产校验
 - migration 验证脚本检查核心表和唯一索引
@@ -650,7 +738,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify_migrations.ps1
 
 - 当前中心 session 仍以数据库 + HttpOnly cookie 为主；OIDC access token / id token 已签发 JWT，并已支持 `userinfo`、`revoke`、`logout` 和 refresh token rotation，但协议级前后端联动单点登出还未实现
 - 当前已实现 OIDC Discovery、JWKS、Authorization Code + PKCE、refresh token grant、token revoke 和 RP 发起的基础 logout，但动态 client 注册、consent 页面、`id_token_hint` 校验和更完整的 session family 风险处置还未实现
-- 当前 SAML 只完成了 IdP metadata、SP metadata 导入和 SP 配置管理，还没有 AuthnRequest / Assertion / SSO / SLO 主链路
+- 当前 SAML 已实现 IdP metadata、SP metadata 导入、SP 配置管理、SP-Initiated / IdP-Initiated SSO 和 Assertion 签名，但还没有 Single Logout、加密 Assertion、AuthnRequest 签名校验和更细的属性策略
 - groups / roles / apps 暂时只实现列表和创建，未实现按 id 查询和更新
 - 当前登录接口按全局 `username` 或 `email` 查找；如果多租户下出现重复标识，会拒绝登录并在服务端记录审计日志
 - `/readyz` 仍然只检查关键配置是否存在，不做真实数据库连通性探测

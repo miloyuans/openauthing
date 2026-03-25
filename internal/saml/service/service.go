@@ -2,10 +2,14 @@ package service
 
 import (
 	"context"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	appsdomain "github.com/miloyuans/openauthing/internal/apps/domain"
@@ -14,36 +18,66 @@ import (
 	"github.com/miloyuans/openauthing/internal/shared/apierror"
 	"github.com/miloyuans/openauthing/internal/shared/validate"
 	"github.com/miloyuans/openauthing/internal/store"
+	userdomain "github.com/miloyuans/openauthing/internal/usercenter/domain"
 )
 
 type ApplicationRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (appsdomain.Application, error)
 }
 
+type UserRepository interface {
+	GetByID(ctx context.Context, id uuid.UUID) (userdomain.User, error)
+	ListGroupCodes(ctx context.Context, userID uuid.UUID) ([]string, error)
+}
+
 type ServiceProviderRepository interface {
 	GetByAppID(ctx context.Context, appID uuid.UUID) (samldomain.ServiceProvider, error)
+	GetByEntityID(ctx context.Context, entityID string) (samldomain.ServiceProvider, error)
 	Upsert(ctx context.Context, sp samldomain.ServiceProvider) (samldomain.ServiceProvider, error)
 }
 
 type CertificateManager interface {
 	MetadataCertificate() string
+	Certificate() *x509.Certificate
+	PrivateKey() *rsa.PrivateKey
 }
 
 type Service struct {
-	cfg    config.SAMLConfig
-	issuer string
-	apps   ApplicationRepository
-	repo   ServiceProviderRepository
-	certs  CertificateManager
+	cfg           config.SAMLConfig
+	issuer        string
+	apps          ApplicationRepository
+	users         UserRepository
+	repo          ServiceProviderRepository
+	certs         CertificateManager
+	sessionSecret string
+	logger        *slog.Logger
+	now           func() time.Time
 }
 
-func NewService(cfg config.SAMLConfig, issuer string, apps ApplicationRepository, repo ServiceProviderRepository, certs CertificateManager) *Service {
+func NewService(
+	cfg config.SAMLConfig,
+	issuer string,
+	apps ApplicationRepository,
+	users UserRepository,
+	repo ServiceProviderRepository,
+	certs CertificateManager,
+	sessionSecret string,
+	logger *slog.Logger,
+) *Service {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	return &Service{
-		cfg:    cfg,
-		issuer: strings.TrimRight(strings.TrimSpace(issuer), "/"),
-		apps:   apps,
-		repo:   repo,
-		certs:  certs,
+		cfg:           cfg,
+		issuer:        strings.TrimRight(strings.TrimSpace(issuer), "/"),
+		apps:          apps,
+		users:         users,
+		repo:          repo,
+		certs:         certs,
+		sessionSecret: strings.TrimSpace(sessionSecret),
+		logger:        logger,
+		now:           time.Now,
 	}
 }
 
@@ -77,7 +111,7 @@ func (s *Service) Upsert(ctx context.Context, rawAppID string, input samldomain.
 		EntityID:             strings.TrimSpace(input.EntityID),
 		ACSURL:               strings.TrimSpace(input.ACSURL),
 		SLOURL:               strings.TrimSpace(input.SLOURL),
-		NameIDFormat:         strings.TrimSpace(input.NameIDFormat),
+		NameIDFormat:         normalizedNameIDFormat(input.NameIDFormat),
 		WantAssertionsSigned: input.WantAssertionsSigned,
 		WantResponseSigned:   input.WantResponseSigned,
 		SignAuthnRequest:     input.SignAuthnRequest,
@@ -253,6 +287,7 @@ func normalizeServiceProvider(sp samldomain.ServiceProvider) samldomain.ServiceP
 	if sp.NameIDFormat == "" {
 		sp.NameIDFormat = samldomain.DefaultNameIDFormat
 	}
+	sp.NameIDFormat = normalizedNameIDFormat(sp.NameIDFormat)
 	sp.SPX509Cert = compactCertificate(sp.SPX509Cert)
 	sp.AttributeMapping = cloneMapping(sp.AttributeMapping)
 	return sp

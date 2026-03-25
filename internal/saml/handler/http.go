@@ -3,8 +3,10 @@ package handler
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
+	authdomain "github.com/miloyuans/openauthing/internal/auth/domain"
 	"github.com/miloyuans/openauthing/internal/shared/httpinput"
 	"github.com/miloyuans/openauthing/internal/shared/httpjson"
 	samldomain "github.com/miloyuans/openauthing/internal/saml/domain"
@@ -15,18 +17,34 @@ type Service interface {
 	Upsert(ctx context.Context, rawAppID string, input samldomain.UpsertServiceProviderInput) (samldomain.ServiceProvider, error)
 	ImportMetadata(ctx context.Context, rawAppID, metadataXML string) (samldomain.ServiceProvider, error)
 	IDPMetadata() ([]byte, error)
+	CompleteSPInitiated(ctx context.Context, session authdomain.Session, input samldomain.SPInitiatedRequest) (samldomain.LoginResult, error)
+	CompleteIDPInitiated(ctx context.Context, session authdomain.Session, rawAppID, rawEntityID string) (samldomain.LoginResult, error)
+}
+
+type SessionAuthenticator interface {
+	Authenticate(ctx context.Context, sid string) (authdomain.Session, error)
 }
 
 type Handler struct {
-	service Service
+	service       Service
+	cookieName    string
+	authenticator SessionAuthenticator
 }
 
 type importMetadataRequest struct {
 	MetadataXML string `json:"metadata_xml"`
 }
 
-func NewHandler(service Service) *Handler {
-	return &Handler{service: service}
+func NewHandler(service Service, cookieName string, authenticator SessionAuthenticator) *Handler {
+	if strings.TrimSpace(cookieName) == "" {
+		cookieName = "openauthing_session"
+	}
+
+	return &Handler{
+		service:       service,
+		cookieName:    cookieName,
+		authenticator: authenticator,
+	}
 }
 
 func (h *Handler) RegisterAPI(r chi.Router) {
@@ -37,6 +55,9 @@ func (h *Handler) RegisterAPI(r chi.Router) {
 
 func (h *Handler) RegisterPublic(r chi.Router) {
 	r.Get("/saml/idp/metadata", h.handleIDPMetadata)
+	r.Get("/saml/idp/login", h.handleLoginPage)
+	r.Get("/saml/idp/sso", h.handleSSO)
+	r.Post("/saml/idp/sso", h.handleSSO)
 }
 
 func (h *Handler) handleGetServiceProvider(w http.ResponseWriter, r *http.Request) {

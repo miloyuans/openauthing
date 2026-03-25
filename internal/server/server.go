@@ -114,8 +114,8 @@ func New(cfg config.Config, logger *slog.Logger) (*Server, error) {
 	authSvc := authservice.NewService(userRepo, sessionRepo, authpassword.NewArgon2ID(), loginLimiter, store, cfg.Session.Secret, logger)
 	oidcSvc := oidcservice.NewService(cfg.OIDC, oidcKeyManager, oidcRepo, oidcRepo, oidcRepo, oidcRepo, userRepo, authSvc, store, cfg.Session.Secret, logger)
 	oidcHandler := oidchandler.NewHandler(oidcSvc, authhandler.DefaultCookieName)
-	samlSvc := samlservice.NewService(cfg.SAML, samlIssuer, appRepo, samlRepo, samlKeyManager)
-	samlHandler := samlhandler.NewHandler(samlSvc)
+	samlSvc := samlservice.NewService(cfg.SAML, samlIssuer, appRepo, userRepo, samlRepo, samlKeyManager, cfg.Session.Secret, logger)
+	samlHandler := samlhandler.NewHandler(samlSvc, authhandler.DefaultCookieName, authSvc)
 	oidcHandler.Register(router)
 	samlHandler.RegisterPublic(router)
 	authHandler := authhandler.NewHandler(
