@@ -630,6 +630,8 @@ Repo 层支持事务上下文。当前通过 `store.WithinTx(ctx, fn)` 将 `sql.
 - [`000015_examples_aws_iam_identity_center.down.sql`](./migrations/000015_examples_aws_iam_identity_center.down.sql)
 - [`000016_examples_alicloud_cloudsso.up.sql`](./migrations/000016_examples_alicloud_cloudsso.up.sql)
 - [`000016_examples_alicloud_cloudsso.down.sql`](./migrations/000016_examples_alicloud_cloudsso.down.sql)
+- [`000017_examples_mock_saml_sp.up.sql`](./migrations/000017_examples_mock_saml_sp.up.sql)
+- [`000017_examples_mock_saml_sp.down.sql`](./migrations/000017_examples_mock_saml_sp.down.sql)
 
 执行：
 
@@ -809,6 +811,41 @@ bash ./examples/alicloud-cloudsso/scripts/bootstrap.sh
 - 示例会要求你把 CloudSSO 控制台里的 `Entity ID`、`ACS URL`、`SCIM Endpoint` 和本地保存的 `SCIM token` 手工填回 env 文件
 - 当前 `scim-target` 只是配置准备；openauthing 还没有实现真正的 SCIM 出站同步
 
+## Mock SAML SP 本地联调样例
+
+仓库已提供 Mock SAML SP 示例目录：
+
+- [`examples/mock-saml-sp/docker-compose.yml`](./examples/mock-saml-sp/docker-compose.yml)
+- [`examples/mock-saml-sp/mock-saml-sp.env.example`](./examples/mock-saml-sp/mock-saml-sp.env.example)
+- [`examples/mock-saml-sp/scripts/bootstrap.sh`](./examples/mock-saml-sp/scripts/bootstrap.sh)
+- [`examples/mock-saml-sp/seed/mock_saml_sp_seed.sql`](./examples/mock-saml-sp/seed/mock_saml_sp_seed.sql)
+- [`examples/mock-saml-sp/README.md`](./examples/mock-saml-sp/README.md)
+
+这个示例会启动：
+
+- `openauthing`
+- `mock-saml-sp`
+- `postgres`
+- `redis`
+
+并准备：
+
+- 一个 `saml-sp` 类型应用，指向本地 Mock SP 的 ACS
+- 一个测试用户和一个测试组
+- 一个最小可用的 Mock SP 页面，用来发起 `AuthnRequest`、接收 `SAMLResponse` 并展示解析后的 `Assertion`
+
+Linux 启动命令：
+
+```bash
+bash ./examples/mock-saml-sp/scripts/bootstrap.sh
+```
+
+说明：
+
+- 这个示例以本地联调和 Assertion 调试为主
+- Mock SP 会展示 `NameID`、`Attributes`、`RelayState` 和最小 XML Signature 验证结果
+- 这个示例不追求生产级 SP 功能完整性
+
 ## 测试
 
 当前测试覆盖：
@@ -829,6 +866,7 @@ bash ./examples/alicloud-cloudsso/scripts/bootstrap.sh
 - JumpServer OIDC example 资产校验
 - AWS IAM Identity Center example 资产校验
 - Alibaba Cloud CloudSSO example 资产校验
+- Mock SAML SP example 资产校验
 - migration 验证脚本检查核心表和唯一索引
 
 执行：

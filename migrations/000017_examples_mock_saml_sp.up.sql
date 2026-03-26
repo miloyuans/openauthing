@@ -1,0 +1,1 @@
+-- no schema change for mock SAML SP example assets

@@ -1,0 +1,76 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: openauthing
+      POSTGRES_DB: openauthing
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - mock_saml_sp_postgres_data:/var/lib/postgresql/data
+      - ../../:/workspace:ro
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - mock_saml_sp_redis_data:/data
+
+  openauthing:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/app.Dockerfile
+    working_dir: /workspace
+    command: go run -mod=mod ./cmd/server
+    environment:
+      OPENAUTHING_APP_NAME: openauthing
+      OPENAUTHING_ENV: development
+      OPENAUTHING_HTTP_ADDR: :8080
+      OPENAUTHING_HTTP_ALLOWED_ORIGINS: "${OPENAUTHING_HTTP_ALLOWED_ORIGINS:-http://localhost:8082}"
+      OPENAUTHING_POSTGRES_DSN: postgres://openauthing@postgres:5432/openauthing?sslmode=disable
+      OPENAUTHING_REDIS_ADDR: redis:6379
+      OPENAUTHING_LOG_LEVEL: info
+      OPENAUTHING_SESSION_SECRET: change-me-in-local-dev-only
+      OPENAUTHING_OIDC_ISSUER: "${OPENAUTHING_OIDC_ISSUER:-http://localhost:8080}"
+      OPENAUTHING_SAML_IDP_ENTITY_ID: "${OPENAUTHING_SAML_IDP_ENTITY_ID:-http://localhost:8080/saml/idp/metadata}"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../../:/workspace
+      - mock_saml_sp_go_mod_cache:/go/pkg/mod
+      - mock_saml_sp_go_build_cache:/root/.cache/go-build
+    depends_on:
+      - postgres
+      - redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  mock-saml-sp:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/app.Dockerfile
+    working_dir: /workspace
+    command: go run -mod=mod ./examples/mock-saml-sp
+    environment:
+      MOCK_SAML_SP_ADDR: :8082
+      MOCK_SAML_SP_BASE_URL: "${MOCK_SAML_SP_BASE_URL:-http://localhost:8082}"
+      MOCK_SAML_SP_ENTITY_ID: "${MOCK_SAML_SP_ENTITY_ID:-http://localhost:8082/metadata}"
+      MOCK_SAML_SP_ACS_URL: "${MOCK_SAML_SP_ACS_URL:-http://localhost:8082/acs}"
+      MOCK_SAML_SP_SLO_URL: "${MOCK_SAML_SP_SLO_URL:-http://localhost:8082/slo}"
+      MOCK_SAML_SP_IDP_SSO_URL: "${MOCK_SAML_SP_IDP_SSO_URL:-http://localhost:8080/saml/idp/sso}"
+      MOCK_SAML_SP_IDP_METADATA_URL: "${MOCK_SAML_SP_IDP_METADATA_URL:-http://openauthing:8080/saml/idp/metadata}"
+      MOCK_SAML_SP_IDP_METADATA_BROWSER_URL: "${MOCK_SAML_SP_IDP_METADATA_BROWSER_URL:-http://localhost:8080/saml/idp/metadata}"
+    ports:
+      - "8082:8082"
+    volumes:
+      - ../../:/workspace
+      - mock_saml_sp_go_mod_cache:/go/pkg/mod
+      - mock_saml_sp_go_build_cache:/root/.cache/go-build
+    depends_on:
+      - openauthing
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  mock_saml_sp_postgres_data:
+  mock_saml_sp_redis_data:
+  mock_saml_sp_go_mod_cache:
+  mock_saml_sp_go_build_cache:
