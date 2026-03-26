@@ -382,3 +382,63 @@ func TestSAMLSLOEndpointIsRegistered(t *testing.T) {
 		t.Fatalf("expected status 400 for invalid SLO request payload, got %d", rec.Code)
 	}
 }
+
+func TestCASLoginPageEndpoint(t *testing.T) {
+	srv := newTestServer(t, config.Config{
+		App: config.AppConfig{Name: "openauthing", Env: "test"},
+		HTTP: config.HTTPConfig{
+			Addr:           ":0",
+			AllowedOrigins: []string{"http://localhost:5173"},
+		},
+		Postgres: config.PostgresConfig{DSN: "postgres://openauthing@localhost:5432/openauthing?sslmode=disable"},
+		Redis:    config.RedisConfig{Addr: "redis:6379"},
+		Log:      config.LogConfig{Level: "debug"},
+		Session:  config.SessionConfig{Secret: "test-session-secret"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/cas/login?service=http%3A%2F%2Flocalhost%3A9090%2Fcas", nil)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	if contentType := rec.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
+		t.Fatalf("unexpected content type: %q", contentType)
+	}
+
+	if !strings.Contains(rec.Body.String(), "continue the CAS login flow") {
+		t.Fatalf("expected cas login page content, got %s", rec.Body.String())
+	}
+}
+
+func TestCASServiceValidateEndpointIsRegistered(t *testing.T) {
+	srv := newTestServer(t, config.Config{
+		App: config.AppConfig{Name: "openauthing", Env: "test"},
+		HTTP: config.HTTPConfig{
+			Addr:           ":0",
+			AllowedOrigins: []string{"http://localhost:5173"},
+		},
+		Postgres: config.PostgresConfig{DSN: "postgres://openauthing@localhost:5432/openauthing?sslmode=disable"},
+		Redis:    config.RedisConfig{Addr: "redis:6379"},
+		Log:      config.LogConfig{Level: "debug"},
+		Session:  config.SessionConfig{Secret: "test-session-secret"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/cas/serviceValidate", nil)
+	rec := httptest.NewRecorder()
+
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	if contentType := rec.Header().Get("Content-Type"); contentType != "application/xml; charset=utf-8" {
+		t.Fatalf("unexpected content type: %q", contentType)
+	}
+
+	if !strings.Contains(rec.Body.String(), "INVALID_REQUEST") {
+		t.Fatalf("expected invalid request xml, got %s", rec.Body.String())
+	}
+}

@@ -19,6 +19,8 @@ const (
 	defaultSessionSecret  = "change-me-in-local-dev-only"
 	defaultOIDCIssuer     = "http://localhost:8080"
 	defaultOIDCCodeTTL    = 300
+	defaultCASHosts       = "localhost,127.0.0.1,host.docker.internal"
+	defaultCASTicketTTL   = 60
 )
 
 type Config struct {
@@ -30,6 +32,7 @@ type Config struct {
 	Session  SessionConfig  `json:"session"`
 	OIDC     OIDCConfig     `json:"oidc"`
 	SAML     SAMLConfig     `json:"saml"`
+	CAS      CASConfig      `json:"cas"`
 }
 
 type AppConfig struct {
@@ -70,6 +73,11 @@ type SAMLConfig struct {
 	PrivateKeyFile  string `json:"private_key_file"`
 }
 
+type CASConfig struct {
+	AllowedServiceHosts     []string `json:"allowed_service_hosts"`
+	ServiceTicketTTLSeconds int      `json:"service_ticket_ttl_seconds"`
+}
+
 func Load() (Config, error) {
 	cfg := Config{
 		App: AppConfig{
@@ -96,6 +104,10 @@ func Load() (Config, error) {
 			Issuer:                      defaultOIDCIssuer,
 			AuthorizationCodeTTLSeconds: defaultOIDCCodeTTL,
 		},
+		CAS: CASConfig{
+			AllowedServiceHosts:     splitCSV(defaultCASHosts),
+			ServiceTicketTTLSeconds: defaultCASTicketTTL,
+		},
 	}
 
 	if path := strings.TrimSpace(os.Getenv("OPENAUTHING_CONFIG_FILE")); path != "" {
@@ -120,11 +132,21 @@ func Load() (Config, error) {
 	cfg.SAML.IDPEntityID = getEnv("OPENAUTHING_SAML_IDP_ENTITY_ID", cfg.SAML.IDPEntityID)
 	cfg.SAML.CertificateFile = getEnv("OPENAUTHING_SAML_IDP_CERT_FILE", cfg.SAML.CertificateFile)
 	cfg.SAML.PrivateKeyFile = getEnv("OPENAUTHING_SAML_IDP_KEY_FILE", cfg.SAML.PrivateKeyFile)
+	cfg.CAS.ServiceTicketTTLSeconds = getEnvInt(
+		"OPENAUTHING_CAS_SERVICE_TICKET_TTL_SECONDS",
+		cfg.CAS.ServiceTicketTTLSeconds,
+	)
 
 	if origins, ok := lookupEnv("OPENAUTHING_HTTP_ALLOWED_ORIGINS"); ok {
 		cfg.HTTP.AllowedOrigins = splitCSV(origins)
 	} else if len(cfg.HTTP.AllowedOrigins) == 0 {
 		cfg.HTTP.AllowedOrigins = splitCSV(defaultAllowedOrigins)
+	}
+
+	if hosts, ok := lookupEnv("OPENAUTHING_CAS_ALLOWED_SERVICE_HOSTS"); ok {
+		cfg.CAS.AllowedServiceHosts = splitCSV(hosts)
+	} else if len(cfg.CAS.AllowedServiceHosts) == 0 {
+		cfg.CAS.AllowedServiceHosts = splitCSV(defaultCASHosts)
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -184,6 +206,10 @@ func (c Config) validate() error {
 		return err
 	}
 
+	if err := validateCASConfig(c.CAS); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -218,6 +244,20 @@ func validateSAMLConfig(c SAMLConfig) error {
 
 	if strings.ContainsAny(c.IDPEntityID, " \t\r\n") {
 		return fmt.Errorf("saml.idp_entity_id must not contain whitespace")
+	}
+
+	return nil
+}
+
+func validateCASConfig(c CASConfig) error {
+	if c.ServiceTicketTTLSeconds <= 0 {
+		return fmt.Errorf("cas.service_ticket_ttl_seconds must be greater than 0")
+	}
+
+	for _, host := range c.AllowedServiceHosts {
+		if strings.ContainsAny(host, " \t\r\n") {
+			return fmt.Errorf("cas.allowed_service_hosts must not contain whitespace")
+		}
 	}
 
 	return nil

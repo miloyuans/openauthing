@@ -15,6 +15,7 @@
 cmd/server
 internal/auth
 internal/apps
+internal/cas
 internal/config
 internal/logging
 internal/platform
@@ -55,6 +56,8 @@ docs
 | saml idp entity id | `OPENAUTHING_SAML_IDP_ENTITY_ID` | `http://localhost:8080/saml/idp/metadata` |
 | saml certificate file | `OPENAUTHING_SAML_IDP_CERT_FILE` | `./deploy/keys/saml-idp-cert.pem` |
 | saml private key file | `OPENAUTHING_SAML_IDP_KEY_FILE` | `./deploy/keys/saml-idp-key.pem` |
+| cas allowed service hosts | `OPENAUTHING_CAS_ALLOWED_SERVICE_HOSTS` | `localhost,127.0.0.1,host.docker.internal` |
+| cas service ticket ttl | `OPENAUTHING_CAS_SERVICE_TICKET_TTL_SECONDS` | `60` |
 | config file path | `OPENAUTHING_CONFIG_FILE` | `./config.example.json` |
 
 参考：
@@ -83,6 +86,9 @@ docs
 - `POST /saml/idp/sso`
 - `GET /saml/idp/slo`
 - `POST /saml/idp/slo`
+- `GET /cas/login`
+- `GET /cas/serviceValidate`
+- `GET /cas/p3/serviceValidate`
 
 本任务新增 CRUD：
 
@@ -324,6 +330,71 @@ SP-Initiated SSO：
 - 当前只实现 SP 发起到 IdP 的基础 SLO 处理；如果用户直接调用 `/api/v1/auth/logout`，还不会反向通知已登录的 SAML SP
 - 当前为未来统一登出保留了协议适配接口，但还没有实现多协议 fan-out 登出编排
 - 当前没有实现 AuthnRequest / LogoutRequest 的签名校验，也没有实现完整的前后端多 SP 级联登出
+
+### CAS 基础联调
+
+CAS 当前实现的是最小可用服务端能力：
+
+- `GET /cas/login`
+- `GET /cas/serviceValidate`
+- `GET /cas/p3/serviceValidate`
+
+能力边界：
+
+- 当前只支持 `TGT` 和 `ST`
+- `ST` 是一次性票据，校验成功后立即消费
+- `TGT` 仅作为中心 session 的后端关联，不直接暴露给客户端
+- `ticket` 在数据库 `cas_tickets.ticket` 中保存的是 HMAC-SHA256 哈希值，不保存原始票据
+- `service` 必须是合法的 `http/https` 绝对 URL，且主机名要命中 `OPENAUTHING_CAS_ALLOWED_SERVICE_HOSTS`
+
+先创建一个本地测试用户并登录，拿到中心 session cookie：
+
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/login \
+  -c cookies.txt -b cookies.txt \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "alice",
+    "password": "secret123"
+  }'
+```
+
+请求 CAS 登录入口，已登录时会拿到重定向：
+
+```bash
+curl -i -c cookies.txt -b cookies.txt \
+  "http://localhost:8080/cas/login?service=http%3A%2F%2Flocalhost%3A9090%2Fcas"
+```
+
+成功时会返回：
+
+- `302 Found`
+- `Location: http://localhost:9090/cas?ticket=ST-...`
+
+用 `serviceValidate` 校验 ST：
+
+```bash
+curl "http://localhost:8080/cas/serviceValidate?service=http%3A%2F%2Flocalhost%3A9090%2Fcas&ticket=REPLACE_ST"
+```
+
+用 `p3/serviceValidate` 校验并带回属性：
+
+```bash
+curl "http://localhost:8080/cas/p3/serviceValidate?service=http%3A%2F%2Flocalhost%3A9090%2Fcas&ticket=REPLACE_ST"
+```
+
+`p3/serviceValidate` 当前至少返回：
+
+- `username`
+- `email`
+- `display_name`
+- `groups`
+
+当前常见校验失败：
+
+- `INVALID_REQUEST`：缺少 `service` 或 `ticket`
+- `INVALID_SERVICE`：`service` 不合法、不在白名单里，或和票据绑定的 service 不匹配
+- `INVALID_TICKET`：票据不存在、已过期、已消费、类型不对，或票据对应的用户不可用
 
 ### OIDC Authorization Code + PKCE 本地联调
 
@@ -632,6 +703,8 @@ Repo 层支持事务上下文。当前通过 `store.WithinTx(ctx, fn)` 将 `sql.
 - [`000016_examples_alicloud_cloudsso.down.sql`](./migrations/000016_examples_alicloud_cloudsso.down.sql)
 - [`000017_examples_mock_saml_sp.up.sql`](./migrations/000017_examples_mock_saml_sp.up.sql)
 - [`000017_examples_mock_saml_sp.down.sql`](./migrations/000017_examples_mock_saml_sp.down.sql)
+- [`000018_cas_tickets.up.sql`](./migrations/000018_cas_tickets.up.sql)
+- [`000018_cas_tickets.down.sql`](./migrations/000018_cas_tickets.down.sql)
 
 执行：
 
@@ -862,6 +935,7 @@ bash ./examples/mock-saml-sp/scripts/bootstrap.sh
 - auth login handler
 - auth session repo / middleware / me / logout / revoke
 - SAML IdP metadata 输出、SP metadata 导入、SP-Initiated / IdP-Initiated SSO、SAML 登录态绑定和基础 SLO
+- CAS `login / serviceValidate / p3/serviceValidate`、票据签发、一次性消费和 XML 响应
 - Jenkins OIDC example 资产校验
 - JumpServer OIDC example 资产校验
 - AWS IAM Identity Center example 资产校验
@@ -886,6 +960,7 @@ pwsh ./scripts/verify_migrations.ps1
 - 当前中心 session 仍以数据库 + HttpOnly cookie 为主；OIDC access token / id token 已签发 JWT，并已支持 `userinfo`、`revoke`、`logout` 和 refresh token rotation，但协议级前后端联动单点登出还未实现
 - 当前已实现 OIDC Discovery、JWKS、Authorization Code + PKCE、refresh token grant、token revoke 和 RP 发起的基础 logout，但动态 client 注册、consent 页面、`id_token_hint` 校验和更完整的 session family 风险处置还未实现
 - 当前 SAML 已实现 IdP metadata、SP metadata 导入、SP 配置管理、SP-Initiated / IdP-Initiated SSO、Assertion 签名和基础 Single Logout，但还没有 AuthnRequest / LogoutRequest 签名校验、中心 logout 反向 fan-out、完整多 SP 统一登出编排、加密 Assertion 和更细的属性策略
+- 当前 CAS 已实现 `login / serviceValidate / p3/serviceValidate`、`TGT / ST` 票据和中心 session 绑定，但还没有 `/logout`、代理票据 `PT / PGT`、后台 service 白名单配置、代理回调和更完整的 CAS 互操作细节
 - 当前 `scim-target` 应用类型已经可以用于记录外部 SCIM 目标，但 openauthing 还没有实现完整的 SCIM v2 出站同步，所以 AWS IAM Identity Center 样例当前仍以配置准备和字段契约为主
 - groups / roles / apps 暂时只实现列表和创建，未实现按 id 查询和更新
 - 当前登录接口按全局 `username` 或 `email` 查找；如果多租户下出现重复标识，会拒绝登录并在服务端记录审计日志

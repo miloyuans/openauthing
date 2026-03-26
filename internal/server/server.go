@@ -19,6 +19,9 @@ import (
 	appshandler "github.com/miloyuans/openauthing/internal/apps/handler"
 	appsrepo "github.com/miloyuans/openauthing/internal/apps/repo"
 	appsservice "github.com/miloyuans/openauthing/internal/apps/service"
+	cashandler "github.com/miloyuans/openauthing/internal/cas/handler"
+	casrepo "github.com/miloyuans/openauthing/internal/cas/repo"
+	casservice "github.com/miloyuans/openauthing/internal/cas/service"
 	"github.com/miloyuans/openauthing/internal/config"
 	oidchandler "github.com/miloyuans/openauthing/internal/oidc/handler"
 	"github.com/miloyuans/openauthing/internal/oidc/keys"
@@ -117,8 +120,12 @@ func New(cfg config.Config, logger *slog.Logger) (*Server, error) {
 	oidcHandler := oidchandler.NewHandler(oidcSvc, authhandler.DefaultCookieName)
 	samlSvc := samlservice.NewService(cfg.SAML, samlIssuer, appRepo, userRepo, samlRepo, samlLoginSessionRepo, sessionRepo, samlKeyManager, store, cfg.Session.Secret, logger)
 	samlHandler := samlhandler.NewHandler(samlSvc, authhandler.DefaultCookieName, authSvc)
+	casTicketRepo := casrepo.NewPostgresTicketRepository(store)
+	casSvc := casservice.NewService(cfg.CAS, userRepo, casTicketRepo, store, cfg.Session.Secret, logger)
+	casHandler := cashandler.NewHandler(casSvc, authhandler.DefaultCookieName, authSvc)
 	oidcHandler.Register(router)
 	samlHandler.RegisterPublic(router)
+	casHandler.Register(router)
 	authHandler := authhandler.NewHandler(
 		authSvc,
 		authhandler.DefaultCookieName,

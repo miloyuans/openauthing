@@ -30,5 +30,13 @@
     "idp_entity_id": "",
     "certificate_file": "",
     "private_key_file": ""
+  },
+  "cas": {
+    "allowed_service_hosts": [
+      "localhost",
+      "127.0.0.1",
+      "host.docker.internal"
+    ],
+    "service_ticket_ttl_seconds": 60
   }
 }

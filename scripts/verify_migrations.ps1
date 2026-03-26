@@ -93,6 +93,9 @@ BEGIN
     IF to_regclass('public.saml_login_sessions') IS NULL THEN
         RAISE EXCEPTION 'missing table: saml_login_sessions';
     END IF;
+    IF to_regclass('public.cas_tickets') IS NULL THEN
+        RAISE EXCEPTION 'missing table: cas_tickets';
+    END IF;
 END $$;
 
 DO $$
@@ -107,6 +110,7 @@ DECLARE
     oidc_client_one UUID;
     saml_app_one UUID;
     saml_login_session_one UUID;
+    cas_tgt_one UUID;
 BEGIN
     INSERT INTO tenants (name, slug, status)
     VALUES ('Tenant One', 'tenant-one', 'active')
@@ -348,6 +352,47 @@ BEGIN
         WHEN unique_violation THEN NULL;
     END;
 
+    INSERT INTO cas_tickets (
+        ticket, type, service, user_id, session_id, parent_ticket_id, expires_at
+    ) VALUES (
+        repeat('e', 64),
+        'TGT',
+        NULL,
+        user_one,
+        session_one,
+        NULL,
+        NOW() + INTERVAL '1 day'
+    ) RETURNING id INTO cas_tgt_one;
+
+    INSERT INTO cas_tickets (
+        ticket, type, service, user_id, session_id, parent_ticket_id, expires_at
+    ) VALUES (
+        repeat('f', 64),
+        'ST',
+        'https://service.example.test/cas',
+        user_one,
+        session_one,
+        cas_tgt_one,
+        NOW() + INTERVAL '5 minutes'
+    );
+
+    BEGIN
+        INSERT INTO cas_tickets (
+            ticket, type, service, user_id, session_id, parent_ticket_id, expires_at
+        ) VALUES (
+            repeat('f', 64),
+            'ST',
+            'https://service.example.test/cas',
+            user_one,
+            session_one,
+            cas_tgt_one,
+            NOW() + INTERVAL '5 minutes'
+        );
+        RAISE EXCEPTION 'expected unique violation on cas_tickets.ticket';
+    EXCEPTION
+        WHEN unique_violation THEN NULL;
+    END;
+
     BEGIN
         INSERT INTO applications (
             tenant_id, name, code, type, status, homepage_url, icon_url, description
@@ -409,6 +454,9 @@ BEGIN
     END IF;
     IF to_regclass('public.saml_login_sessions') IS NOT NULL THEN
         RAISE EXCEPTION 'saml_login_sessions table should have been dropped';
+    END IF;
+    IF to_regclass('public.cas_tickets') IS NOT NULL THEN
+        RAISE EXCEPTION 'cas_tickets table should have been dropped';
     END IF;
     IF to_regclass('public.oidc_clients') IS NOT NULL THEN
         RAISE EXCEPTION 'oidc_clients table should have been dropped';
