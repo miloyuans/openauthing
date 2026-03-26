@@ -1,0 +1,1 @@
+-- no schema change for Alibaba Cloud CloudSSO example assets

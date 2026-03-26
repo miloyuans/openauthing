@@ -628,6 +628,8 @@ Repo 层支持事务上下文。当前通过 `store.WithinTx(ctx, fn)` 将 `sql.
 - [`000014_saml_login_sessions.down.sql`](./migrations/000014_saml_login_sessions.down.sql)
 - [`000015_examples_aws_iam_identity_center.up.sql`](./migrations/000015_examples_aws_iam_identity_center.up.sql)
 - [`000015_examples_aws_iam_identity_center.down.sql`](./migrations/000015_examples_aws_iam_identity_center.down.sql)
+- [`000016_examples_alicloud_cloudsso.up.sql`](./migrations/000016_examples_alicloud_cloudsso.up.sql)
+- [`000016_examples_alicloud_cloudsso.down.sql`](./migrations/000016_examples_alicloud_cloudsso.down.sql)
 
 执行：
 
@@ -773,6 +775,40 @@ bash ./examples/aws-iam-identity-center/scripts/bootstrap.sh
 - 示例会要求你把 AWS 控制台里下载的 metadata 和 SCIM endpoint/token 手工填回本地 env 文件
 - 当前 `scim-target` 只是配置准备；openauthing 还没有在本任务里实现真正的 SCIM 出站同步
 
+## 阿里云 CloudSSO 对接样例
+
+仓库已提供 Alibaba Cloud CloudSSO 示例目录：
+
+- [`examples/alicloud-cloudsso/docker-compose.yml`](./examples/alicloud-cloudsso/docker-compose.yml)
+- [`examples/alicloud-cloudsso/alicloud-cloudsso.env.example`](./examples/alicloud-cloudsso/alicloud-cloudsso.env.example)
+- [`examples/alicloud-cloudsso/seed/alicloud_cloudsso_seed.sql`](./examples/alicloud-cloudsso/seed/alicloud_cloudsso_seed.sql)
+- [`examples/alicloud-cloudsso/scripts/bootstrap.sh`](./examples/alicloud-cloudsso/scripts/bootstrap.sh)
+- [`examples/alicloud-cloudsso/README.md`](./examples/alicloud-cloudsso/README.md)
+
+这个示例会启动：
+
+- `openauthing`
+- `postgres`
+- `redis`
+
+并准备：
+
+- 一个 `saml-sp` 类型应用，用于阿里云 CloudSSO 作为 SP 的 SAML 登录配置
+- 一个 `scim-target` 类型应用，用于阿里云 CloudSSO 的 SCIM 对接占位
+- 一个测试用户和一个测试组
+
+Linux 启动命令：
+
+```bash
+bash ./examples/alicloud-cloudsso/scripts/bootstrap.sh
+```
+
+说明：
+
+- 这个示例以文档、seed 和配置模板为主，不会自动调用阿里云 API
+- 示例会要求你把 CloudSSO 控制台里的 `Entity ID`、`ACS URL`、`SCIM Endpoint` 和本地保存的 `SCIM token` 手工填回 env 文件
+- 当前 `scim-target` 只是配置准备；openauthing 还没有实现真正的 SCIM 出站同步
+
 ## 测试
 
 当前测试覆盖：
@@ -792,6 +828,7 @@ bash ./examples/aws-iam-identity-center/scripts/bootstrap.sh
 - Jenkins OIDC example 资产校验
 - JumpServer OIDC example 资产校验
 - AWS IAM Identity Center example 资产校验
+- Alibaba Cloud CloudSSO example 资产校验
 - migration 验证脚本检查核心表和唯一索引
 
 执行：
